@@ -81,22 +81,30 @@ fn config_keys() -> BTreeSet<String> {
         .collect()
 }
 
+/// The docs quote other tools' command lines too, so a line naming one of them
+/// is skipped rather than mined for angelo flags.
+const OTHER_TOOLS: &[&str] = &[
+    "cargo", "pip", "git ", "mutmut", "coverage", "pytest", "zensical", "bash", "uses:",
+];
+
 #[test]
 fn every_documented_flag_exists() {
     let exec_help = help(&["exec"]);
     let root_help = help(&[]);
-    // Flags that belong to other tools the docs quote, not to angelo.
-    let borrowed = ["max-children", "unified", "relative", "junit-xml", "rcfile"];
+    let text = prose();
 
-    let mut missing = Vec::new();
-    for flag in documented_flags(&prose()) {
-        if borrowed.contains(&flag.as_str()) {
-            continue;
-        }
-        if !exec_help.contains(&format!("--{flag}")) && !root_help.contains(&format!("--{flag}")) {
-            missing.push(flag);
-        }
-    }
+    let ours: String = text
+        .lines()
+        .filter(|line| !OTHER_TOOLS.iter().any(|tool| line.contains(tool)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let missing: Vec<String> = documented_flags(&ours)
+        .into_iter()
+        .filter(|flag| {
+            !exec_help.contains(&format!("--{flag}")) && !root_help.contains(&format!("--{flag}"))
+        })
+        .collect();
     assert!(
         missing.is_empty(),
         "documented flags that angelo does not have: {missing:?}"

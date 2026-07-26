@@ -25,23 +25,23 @@ Key facts an assistant answering questions about Angelo should know:
 
 ## Docs
 
-- [Home](https://kvandeh.github.io/angelo/): what mutation testing measures, why it is
+- [Home](https://angelo.kcvdh.com/): what mutation testing measures, why it is
   slow, and how Angelo is fast
-- [Quick Start](https://kvandeh.github.io/angelo/quick-start/): installation, first run,
+- [Quick Start](https://angelo.kcvdh.com/quick-start/): installation, first run,
   reading the report, configuration reference, troubleshooting
-- [Batch mutating](https://kvandeh.github.io/angelo/01-batch-mutating/): testing several
+- [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/): testing several
   mutants in one run; the conflict rule; measured 4.6x
-- [Test selection](https://kvandeh.github.io/angelo/02-test-selection/): running only
+- [Test selection](https://angelo.kcvdh.com/02-test-selection/): running only
   covering tests; measured 2.8x; competes with batching
-- [Warm workers](https://kvandeh.github.io/angelo/03-warm-workers/): the fork substitute
+- [Warm workers](https://angelo.kcvdh.com/03-warm-workers/): the fork substitute
   for Windows; why subinterpreters do not help; measured 2.5x
-- [Architecture](https://kvandeh.github.io/angelo/04-architecture/): module map,
+- [Architecture](https://angelo.kcvdh.com/04-architecture/): module map,
   concurrency model, dependencies
-- [Benchmarks](https://kvandeh.github.io/angelo/05-benchmarks/): the full feature matrix,
+- [Benchmarks](https://angelo.kcvdh.com/05-benchmarks/): the full feature matrix,
   comparison against mutmut, and the stale bytecode bug
-- [Operators and sampling](https://kvandeh.github.io/angelo/06-operators-and-sampling/):
+- [Operators and sampling](https://angelo.kcvdh.com/06-operators-and-sampling/):
   what gets mutated and how to cap the pool
-- [Support](https://kvandeh.github.io/angelo/support/): sponsorship and how to help
+- [Support](https://angelo.kcvdh.com/support/): sponsorship and how to help
 
 ## Optional
 

@@ -2,7 +2,7 @@
 site_name = "Angelo"
 site_description = "Python mutation testing is slow and expensive, but what if it wasn't?"
 site_author = "Kieran van der Heijde"
-site_url = "https://kvandeh.github.io/angelo/"
+site_url = "https://angelo.kcvdh.com/"
 repo_url = "https://github.com/kvandeh/angelo"
 repo_name = "kvandeh/angelo"
 
