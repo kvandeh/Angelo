@@ -1,0 +1,66 @@
+name: Lint & test
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Cheap, so it runs on every branch.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  # Expensive: needs python, pytest and coverage. Only where it pays.
+  test:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.ref == 'refs/heads/master' ||
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/develop'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # The end-to-end tests drive a real pytest; coverage unlocks batching and
+      # test selection, so without it those paths would silently go untested.
+      - run: python -m pip install --upgrade pip pytest coverage
+      - run: cargo test --all-targets
+
+  # Batching, test selection and warm workers are pure speed features. If any
+  # of them changes a score, that is a correctness bug, not a tuning question.
+  verdicts:
+    if: >
+      github.event_name == 'pull_request' ||
+      github.ref == 'refs/heads/master' ||
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --upgrade pip pytest coverage
+      - run: cargo build --release
+      # bash, not ./, because the exec bit does not survive a Windows commit.
+      - run: bash scripts/verdict-matrix.sh

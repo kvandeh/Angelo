@@ -1,0 +1,16 @@
+[package]
+name = "angelo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.4", features = ["derive"] }
+roxmltree = "0.21.1"
+ruff_python_ast = "0.0.6"
+ruff_python_parser = "0.0.6"
+ruff_text_size = "0.0.6"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["rt"] }
+toml = "1.1.3"
+turso = "0.7.1"

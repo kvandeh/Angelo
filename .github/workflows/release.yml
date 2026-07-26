@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    branches: [master, main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need the merge commit's parents to read its message.
+          fetch-depth: 0
+
+      - name: Read the version from Cargo.toml
+        id: version
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Cargo.toml says $version"
+
+      # Every push to master would otherwise try to re-release the same
+      # version. Bump Cargo.toml to cut a release; otherwise this is a no-op.
+      - name: Has this version already been released?
+        id: existing
+        shell: bash
+        run: |
+          if git ls-remote --tags origin | grep -q "refs/tags/${{ steps.version.outputs.tag }}$"; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "${{ steps.version.outputs.tag }} already exists — nothing to do"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The release notes are the merge commit's message. A direct push to
+      # master is not a merge, so it falls back to that commit's message.
+      - name: Collect the release notes
+        if: steps.existing.outputs.skip == 'false'
+        shell: bash
+        run: |
+          parents=$(git rev-list --parents -n 1 HEAD | wc -w)
+          if [ "$parents" -gt 2 ]; then
+            echo "HEAD is a merge commit"
+          else
+            echo "HEAD is a direct commit, using its message"
+          fi
+          git log -1 --pretty=%B > RELEASE_NOTES.md
+          cat RELEASE_NOTES.md
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.existing.outputs.skip == 'false'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.existing.outputs.skip == 'false'
+
+      - name: Build angelo.exe
+        if: steps.existing.outputs.skip == 'false'
+        run: cargo build --release
+
+      # git archive ships tracked files only, so target/ and extra/ stay out.
+      - name: Package the source
+        if: steps.existing.outputs.skip == 'false'
+        shell: bash
+        run: git archive --format=zip --prefix=angelo-${{ steps.version.outputs.version }}/ -o src.zip HEAD
+
+      - name: Publish
+        if: steps.existing.outputs.skip == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: angelo ${{ steps.version.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          files: |
+            target/release/angelo.exe
+            src.zip

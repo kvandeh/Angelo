@@ -1,0 +1,8 @@
+paths = ["."]
+test_command = "python -m pytest"
+workers = 0
+batch_size = 8
+test_selection = true
+warm_workers = true
+warm_recycle_after = 50
+timeout_factor = 2.0

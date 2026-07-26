@@ -1,0 +1,4 @@
+paths = ["."]
+test_command = "python -m pytest"
+workers = 0
+timeout_factor = 2.0
