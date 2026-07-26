@@ -1,100 +1,122 @@
-# 03 — Warm workers
+# Warm workers
 
-**Abstract.** Once only the covering tests run, a mutant costs ~330ms of which ~315ms is
-starting Python and importing pytest. Unix tools skip that with `fork()`; Windows has
-none. Python 3.14 subinterpreters were measured and do **not** substitute. angelo keeps
-one pytest process alive per worker instead: **2.5x**, verdicts unchanged.
+!!! abstract "In one sentence"
+    Once only the relevant tests run, almost all remaining time is spent starting Python.
+    Unix tools avoid that with `fork()`, which Windows lacks, so angelo keeps one pytest
+    process alive instead. Measured at **2.5x faster**, verdicts unchanged.
 
-## Background
+## The problem
 
-Measured cost of one selected run:
+After [test selection](02-test-selection.md), a mutant costs about 330 milliseconds. Only
+about 15 of those milliseconds are testing.
 
-| step | time |
-|---|---|
-| bare interpreter | 18 ms |
-| + import pytest | 173 ms |
-| + collect & configure | 312 ms |
-| + actually run one test | **327 ms** |
+| Step | Time |
+| --- | --- |
+| Start the interpreter | 18 ms |
+| Import pytest | 155 ms |
+| Collect and configure | 139 ms |
+| Run the actual test | 15 ms |
+| **Total** | **327 ms** |
 
-**95% of a selected run is startup.** That is the wall.
+Roughly 95 percent of a run is setup that produces no information. No amount of smarter
+scheduling helps, because the cost is paid before scheduling begins.
 
-`fork()` clones an already-warm interpreter in milliseconds — imports included. It is why
-mutmut is fast, and why mutmut refuses to run on Windows at all.
+## How other tools avoid it
 
-## Rejected: subinterpreters
+`fork()` clones a running process almost instantly, and the clone inherits everything the
+parent had already imported. A mutation tester can therefore import pytest once, then fork
+a fresh warm copy per mutant. Each copy starts hot and dies with its mess contained.
 
-PEP 734 landed `concurrent.interpreters` in Python 3.14. Isolated `sys.modules`, no
-`fork()` needed, works on Windows. Measured:
+This is why mutmut is fast. It is also why mutmut **refuses to run on Windows at all**,
+telling you to use WSL, because Windows has no `fork()`.
 
-| step | time |
-|---|---|
-| create a subinterpreter | 15 ms |
-| import pytest inside it | **131 ms** |
-| import pytest, cold, main interpreter | 119 ms |
+## A rejected alternative
 
-**No saving.** Isolation is the point: each interpreter re-executes every import. Fork's
-value is inheriting imports; PEP 734 deliberately does not.
+Python 3.14 added `concurrent.interpreters` through PEP 734. Subinterpreters are isolated,
+cheap, and work on Windows, which makes them an obvious candidate.
 
-Do not revisit without new evidence.
+They were measured rather than assumed:
 
-## Method
+| Step | Time |
+| --- | --- |
+| Create a subinterpreter | 15 ms |
+| Import pytest inside it | **131 ms** |
+| Import pytest cold, main interpreter | 119 ms |
 
-Keep the process. Reset only what changed.
+**There is no saving.** Isolation is precisely the point of a subinterpreter: each one
+gets its own `sys.modules` and re-executes every import. The value of `fork()` is
+inheriting imports, and PEP 734 deliberately does not do that.
+
+This result is recorded so nobody repeats the experiment.
+
+## What angelo does instead
+
+Keep the process. Reset only the part that actually changed.
 
 ```mermaid
 sequenceDiagram
-    participant R as angelo (Rust)
+    participant A as angelo
     participant P as pytest process
-    R->>P: start once
-    Note over P: import pytest (~170ms, paid once)
+    A->>P: start once
+    Note over P: import pytest, 170ms, paid once
     loop each mutant
-        R->>R: patch file in the worker copy
-        R->>P: {"tests": [...], "stop_at_first_failure": true}
-        Note over P: drop project modules from sys.modules
-        Note over P: run selected tests
-        P-->>R: ##angelo##{"exit_code": 1, "failed": [...]}
+        A->>A: patch the file
+        A->>P: which tests to run
+        Note over P: forget the project's own modules
+        Note over P: run them
+        P-->>A: exit code and failures
     end
-    R->>P: kill on drop
+    A->>P: kill when finished
 ```
 
-**What gets purged:** every module whose `__file__` is under the worker copy. Mutated
-source is re-imported; pytest, stdlib and site-packages stay loaded.
+Between mutants the worker deletes every module whose file lives inside the project copy.
+The mutated source is therefore re-imported on the next run, while pytest, the standard
+library and site-packages stay loaded. That is the entire saving.
 
-**Why replies are prefixed:** pytest writes progress to the same stdout. The `##angelo##`
-prefix is what separates protocol from chatter.
+## Keeping it safe
 
-**Safety net**, matching batching's: any timeout, crash, or unparseable reply retires the
-worker and the mutant re-runs in a fresh subprocess. The process also recycles every
-`warm_recycle_after` runs (default 50) to bound accumulated state.
+A long lived process accumulating state is exactly the kind of thing that produces wrong
+verdicts, so three guards apply.
+
+**Any anomaly retires the worker.** A timeout, a crash, or a reply angelo cannot parse
+means the process is killed and the mutant is re-run in a fresh subprocess. Warm running
+can therefore only change the clock.
+
+**The process recycles.** After `warm_recycle_after` runs, default 50, it is replaced.
+This bounds anything that survives the module purge.
+
+**It only applies to plain pytest commands.** Anything else uses subprocesses.
 
 ## Result
 
-200 mutants, 8 workers:
+Two hundred mutants, eight workers.
 
-| | warm off | warm on | |
-|---|---|---|---|
-| 0.2s suite, batch=1 | 9.29s | **3.77s** | 2.5x |
-| 2.0s suite, batch=1 | 11.20s | **5.94s** | 1.9x |
-| 2.0s suite, batch=8 | 5.12s | 4.45s | 1.15x |
+| Configuration | warm off | warm on | Gain |
+| --- | --- | --- | --- |
+| 0.2 s suite, batch 1 | 9.29 s | **3.77 s** | 2.5x |
+| 2.0 s suite, batch 1 | 11.20 s | **5.94 s** | 1.9x |
+| 2.0 s suite, batch 8 | 5.12 s | 4.45 s | 1.15x |
 
-Warm workers pay most where runs are many and each is cheap — the mirror of test
-selection, which pays where each run is expensive.
-
-Full stack, 2.0s suite: **48.1s → 4.5s, 10.8x**, same score throughout.
+Warm workers pay most where runs are many and each is cheap, which is the mirror image of
+test selection. Together with batching, the full stack takes a 48.1 second job down to
+4.5 seconds.
 
 ## Two bugs this cost
 
-Both silent, both caught by tests:
+Both were silent, and both were caught by tests rather than by reading the code.
 
-1. **Purging `__main__` broke pytest.** The driver *is* `__main__` and lives in the copy;
-   pdb does `import __main__`. Every mutant came back `error`.
-2. **pytest's stdout collided with the protocol.** The reader parsed "1 passed" as a reply.
+**Purging `__main__` broke pytest.** The worker script itself is `__main__`, and it lives
+inside the project copy, so the module purge deleted it. Python's debugger imports
+`__main__`, so every mutant came back as an error.
+
+**pytest's output collided with the protocol.** Both were writing to the same stdout, so
+the reader parsed "1 passed" as a reply. Replies now carry a marker prefix.
 
 ## Limits
 
-- Only for `python -m pytest ...` commands. Anything else uses subprocesses.
-- State can survive a purge: C-extension globals, third-party caches holding project
-  objects. Recycling bounds it; it does not eliminate it.
-- A hanging mutant costs a whole worker restart, not just a process kill.
+- Only for `python -m pytest` style commands.
+- State can outlive a purge. C extension globals and third party caches holding project
+  objects are the realistic cases. Recycling bounds this; it does not remove it.
+- A hanging mutant costs a worker restart rather than just a process kill.
 - **If a score ever drifts between runs, set `warm_workers = false` first.** This is the
-  same risk class as the stale-bytecode bug in [note 05](05-benchmarks.md).
+  same risk class as the stale bytecode bug in [benchmarks](05-benchmarks.md).

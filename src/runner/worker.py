@@ -2,7 +2,7 @@
 
 Windows has no fork(), so angelo cannot clone a warm interpreter per mutant.
 This is the substitute: keep one process alive and reset the part that
-actually changes — the project's own modules — between runs.
+actually changes, the project's own modules, between runs.
 
 Protocol, one JSON object per line on stdin, one marked line back on stdout:
     in   {"tests": ["a.py::test_x"], "stop_at_first_failure": true}
@@ -37,7 +37,7 @@ class Outcome:
 def purge_project_modules():
     """Drop every module loaded from this tree so the next run re-imports the
     mutated source. Anything outside the tree (pytest, stdlib, site-packages)
-    stays imported — that is the whole saving.
+    stays imported, that is the whole saving.
 
     __main__ is this driver, which also lives in the tree: dropping it breaks
     any stdlib that does `import __main__` (pdb does, via rlcompleter)."""

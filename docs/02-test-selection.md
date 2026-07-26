@@ -1,77 +1,93 @@
-# 02 — Test selection
+# Test selection
 
-**Abstract.** A mutant can only be killed by a test that executes it. angelo runs those
-tests and no others, using the coverage map it already builds for batching. Measured at
-**2.8x** unbatched. Selection and batching partly cancel: together they give 7.7x, not
-the 12.9x their product suggests.
+!!! abstract "In one sentence"
+    A fault can only be caught by a test that executes it, so angelo runs those tests and
+    no others. Measured at **2.8x faster** on its own, though it partly competes with
+    batching.
 
-## Background
+## The problem
 
-PIT built its reputation on this ("minutes instead of days"). Stryker calls
-`coverageAnalysis: 'perTest'` its single biggest speedup knob.
+Planting a fault in one function and then running three thousand tests is mostly waste.
+Only the handful of tests that actually execute that function can possibly notice.
 
-angelo already collected the data for conflict detection and was throwing away its other
-use.
+This is not a new observation. PIT built its reputation on it, describing the difference
+as minutes instead of days. Stryker calls per test coverage analysis its single largest
+speedup setting.
 
-## Method
+angelo already collected the necessary data for [batching](01-batch-mutating.md) and was
+using it for one purpose only.
 
-Coverage says *which test*; pytest needs *a node id*. The two spell tests differently:
+## The awkward part
 
-```
-coverage context   pkg.test_mod.test_x
-pytest node id     pkg/test_mod.py::test_x
-```
+Coverage and pytest do not spell a test the same way.
 
-A dotted classname does not say where the module ends and classes begin — `a.b.c` could be
-`a/b/c.py` or `a/b.py::c`. So resolution walks prefixes and takes the longest that exists
-on disk.
+| Source | How it names one test |
+| --- | --- |
+| coverage.py context | `pkg.test_mod.test_x` |
+| pytest node id | `pkg/test_mod.py::test_x` |
+
+Converting between them is not string manipulation, because a dotted name is ambiguous.
+Given `a.b.c`, the module could be `a/b/c.py`, or it could be `a/b.py` containing a class
+`c`. Nothing in the name says which.
+
+angelo resolves this by walking prefixes and taking the longest one that exists as a file
+on disk. The test inventory comes from the junit report of the baseline run, which lists
+every test with its class name.
 
 ```mermaid
 flowchart LR
-    A[baseline junit<br/>classname + name] --> C[resolve against disk]
-    B[coverage contexts<br/>module.function] --> C
-    C --> D[context id → node id]
-    D --> E[batch → union of<br/>its members' node ids]
+    A[coverage contexts] --> C[match]
+    B[baseline junit report] --> C
+    C --> D[pytest node ids]
+    D --> E[run only those tests]
 ```
 
-Two rules keep it honest:
+## Two rules that keep it honest
 
-- **Anything unresolvable falls back to the whole suite.** Running too many tests is slow;
-  running too few invents survivors.
-- **A single-mutant run adds `-x`.** The first failure already settles it.
+**Anything unresolvable falls back to running everything.** If a single covering test
+cannot be named exactly, angelo runs the whole suite for that batch. Running too many
+tests costs time. Running too few would invent survivors, which is the one failure this
+tool must never have.
+
+**A run judging a single mutant stops at the first failure.** Once one test has failed,
+the mutant is caught, and the rest of the suite has nothing left to say. A batch never
+stops early, because it needs to see every failure in order to attribute them.
 
 ## Result
 
-200 mutants, 8 workers:
+Two hundred mutants, eight workers.
 
-| suite | batching | selection | both |
-|---|---|---|---|
-| 2.0s | 4.6x | **2.8x** | **7.7x** |
-| 0.2s | 3.7x | 1.05x | 4.0x |
+| suite length | batching alone | selection alone | both |
+| --- | --- | --- | --- |
+| 2.0 s | 4.6x | **2.8x** | **7.7x** |
+| 0.2 s | 3.7x | 1.05x | 4.0x |
 
-## The interaction
+## The interaction worth understanding
 
-Selection is worth **2.8x at batch_size 1** but only **1.7x at batch_size 8**.
+Selection is worth 2.8x at a batch size of one, but only 1.7x at a batch size of eight.
 
-A batch runs the *union* of its members' tests. Bigger batch → bigger union → closer to
-the whole suite. The two features compete for the same saving.
+The reason is structural. A batch runs the **union** of its members' covering tests. The
+larger the batch, the larger that union, and the closer it gets to simply running
+everything. The two features are competing for the same saving.
 
 ```mermaid
 flowchart LR
-    subgraph "batch of 1"
-    A1[1 mutant] --> B1[1 test]
+    subgraph one [batch of 1]
+        A1[1 mutant] --> B1[1 test]
     end
-    subgraph "batch of 8"
-    A2[8 mutants] --> B2[8 tests<br/>union]
+    subgraph eight [batch of 8]
+        A2[8 mutants] --> B2[8 tests]
     end
 ```
 
-No published multiplier exists for this interaction. It is worth measuring per project,
-not assuming.
+They still stack to 7.7x, which is well short of the 12.9x their product would suggest.
+No published figure exists for this interaction, so the honest advice is to measure
+`batch_size` on your own project rather than trusting a default.
 
 ## Limits
 
-- Saves **test** time, not **startup** time. On a 0.2s suite it is worth ~5%, because
-  there is no test time to save. See [note 03](03-warm-workers.md) for the other half.
-- Parametrised tests collapse to their function — the selection is a safe superset.
-- Needs coverage.py and the default pytest command.
+- Selection removes **test** time, not **startup** time. On a fast suite there is very
+  little test time to remove, which is why the 0.2 second row shows almost nothing.
+  [Warm workers](03-warm-workers.md) attack the other half.
+- Parametrised tests collapse to their function, so the selection is a safe superset.
+- Requires coverage.py and the default pytest command.

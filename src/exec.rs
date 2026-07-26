@@ -34,14 +34,14 @@ pub fn run(options: Options) -> Result<()> {
         sample(&database, options.sample.unwrap_or(config.sample))?;
     } else {
         println!(
-            "existing {ANGELO_DIR}/angelo.db found — resuming (delete {ANGELO_DIR}/ for a fresh run)"
+            "existing {ANGELO_DIR}/angelo.db found, resuming (delete {ANGELO_DIR}/ for a fresh run)"
         );
     }
 
     let pending = database.pending_mutants()?;
     if options.init_only {
         println!(
-            "{} mutants pending — stopping here (--init-only)",
+            "{} mutants pending, stopping here (--init-only)",
             pending.len()
         );
         return Ok(());
@@ -56,12 +56,12 @@ pub fn run(options: Options) -> Result<()> {
     let (baseline, coverage) = coverage::baseline(Path::new("."), &test_command, angelo_dir)?;
     if coverage.is_none() {
         println!(
-            "no per-test coverage (needs `pip install coverage` and the default pytest command) — no batching, no test selection"
+            "no per-test coverage (needs `pip install coverage` and the default pytest command), no batching, no test selection"
         );
     }
     let timeout = baseline.mul_f64(config.timeout_factor) + Duration::from_secs(5);
     println!(
-        "baseline green in {:.1}s — per-mutant timeout {:.1}s",
+        "baseline green in {:.1}s, per-mutant timeout {:.1}s",
         baseline.as_secs_f64(),
         timeout.as_secs_f64()
     );
@@ -70,7 +70,7 @@ pub fn run(options: Options) -> Result<()> {
     if !untested.is_empty() {
         database.record_survived_unrun(&untested)?;
         println!(
-            "{} mutants sit on lines no test executes — survived without a single run",
+            "{} mutants sit on lines no test executes, survived without a single run",
             untested.len()
         );
     }
@@ -114,7 +114,7 @@ fn enumerate(database: &Database, config: &Config, diff: Option<&str>) -> Result
     let files = config.python_files()?;
     if files.is_empty() {
         bail!(
-            "no Python files found under paths {:?} — check angelo.conf",
+            "no Python files found under paths {:?}, check angelo.conf",
             config.paths
         );
     }
@@ -137,7 +137,7 @@ fn enumerate(database: &Database, config: &Config, diff: Option<&str>) -> Result
             mutants.len()
         );
         if mutants.is_empty() {
-            println!("nothing changed — delete {ANGELO_DIR}/ and re-run to widen the scope");
+            println!("nothing changed. Delete {ANGELO_DIR}/ and re-run to widen the scope");
         }
     }
     database.insert_mutants(&mutants)
@@ -147,7 +147,7 @@ fn enumerate(database: &Database, config: &Config, diff: Option<&str>) -> Result
 ///
 /// This is not "run only the first N". The overflow is dropped from the
 /// database entirely, so what remains is a random sample of the whole
-/// codebase — and the score is an estimate over that sample, not a complete
+/// codebase, and the score is an estimate over that sample, not a complete
 /// census of whichever files happened to be enumerated first.
 fn sample(database: &Database, keep: usize) -> Result<()> {
     if keep == 0 {
@@ -159,7 +159,7 @@ fn sample(database: &Database, keep: usize) -> Result<()> {
         return Ok(());
     }
     println!(
-        "sampled {keep} of {total} mutants — {dropped} dropped at random, so the score is an \
+        "sampled {keep} of {total} mutants, {dropped} dropped at random, so the score is an \
          ESTIMATE over a random sample, not a full census"
     );
     Ok(())

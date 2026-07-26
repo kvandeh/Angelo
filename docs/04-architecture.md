@@ -1,106 +1,117 @@
-# 04 — Architecture
+# Architecture
 
-**Abstract.** One Rust binary, flat modules, one Python file. Types own their behaviour;
-async is quarantined in one file; anything that must be cleaned up cleans itself up via
-`Drop`. 2.7k lines of Rust (about a third of it tests), 79 lines of Python,
-10 dependencies.
+!!! abstract "In one sentence"
+    One Rust binary, flat modules, one Python file. Types own their behaviour, async is
+    confined to a single file, and anything needing cleanup cleans itself up.
+
+Roughly 2,700 lines of Rust, about a third of which is tests, plus 79 lines of Python and
+ten dependencies.
 
 ## Module map
 
 ```mermaid
 flowchart TD
-    main[main.rs<br/>clap only] --> exec[exec.rs<br/>the workflow]
-    exec --> config[config.rs<br/>angelo.conf]
-    exec --> mutate[mutate.rs<br/>Mutant, Status]
-    exec --> diff[diff.rs<br/>ChangedLines]
-    exec --> cov[coverage.rs<br/>Coverage]
-    exec --> batch[batch.rs<br/>Batch]
-    exec --> runner[runner.rs<br/>TestRunner]
-    exec --> report[report.rs<br/>Progress, Summary]
-    exec --> db[(db.rs<br/>turso)]
-    runner --> warm[warm.rs<br/>WarmWorker]
-    runner --> pytest[pytest.rs<br/>SuiteResult]
-    warm --> py[runner/worker.py]
+    main[main.rs<br/>CLI only] --> exec[exec.rs<br/>the workflow]
+    exec --> config[config.rs]
+    exec --> mutate[mutate.rs]
+    exec --> diff[diff.rs]
+    exec --> cov[coverage.rs]
+    exec --> batch[batch.rs]
+    exec --> runner[runner.rs]
+    exec --> report[report.rs]
+    exec --> db[(db.rs)]
+    runner --> warm[warm.rs]
+    runner --> pytest[pytest.rs]
+    warm --> py[worker.py]
     cov --> db
 ```
 
 | Module | Owns |
-|---|---|
-| `main.rs` | CLI definitions and dispatch. Nothing else. |
-| `exec.rs` | The workflow: enumerate → baseline → split → compose → run → report. |
+| --- | --- |
+| `main.rs` | Command line definitions and dispatch. Nothing else. |
+| `exec.rs` | The workflow: enumerate, baseline, split, compose, run, report. |
 | `config.rs` | `angelo.conf`, file discovery, skip lists. |
 | `mutate.rs` | `Mutant`, `Status`, the operator table, enumeration. |
 | `coverage.rs` | `Coverage`: classify, attribute, select. |
-| `batch.rs` | `Batch`: conflict rule, first-fit composer. |
-| `diff.rs` | `ChangedLines`: git hunks → a line filter. |
+| `batch.rs` | `Batch`: the conflict rule and the composer. |
+| `diff.rs` | `ChangedLines`: git hunks into a line filter. |
 | `pytest.rs` | The pytest process, `SuiteResult`, `Selection`, node ids. |
-| `runner.rs` | Threads, project copies, patching, bisection. |
-| `warm.rs` | The long-lived pytest host. |
+| `runner.rs` | Threads, project copies, patching, splitting. |
+| `warm.rs` | The long lived pytest host. |
 | `db.rs` | turso. **The only async file.** |
-| `report.rs` | `Progress` (live), `Summary` (scoring). |
+| `report.rs` | `Progress` for live output, `Summary` for scoring. |
 
 ## Three rules
 
-**1. Types own their behaviour.** If a function takes an `X` and branches on it, it
-belongs on `X`. `SuiteResult::status()`, `Batch::accepts()`, `TestCase::node_id()`.
+### Types own their behaviour
 
-**2. Async is quarantined.** turso's API is async-only. `db.rs` owns a current-thread
-tokio runtime and `block_on`s every call. Everything else is plain sync Rust.
+If a function takes an `X` and branches on it, it belongs on `X`. Hence
+`SuiteResult::status()`, `Batch::accepts()`, `TestCase::node_id()` rather than a pile of
+free functions taking six arguments each.
 
-**3. Cleanup is automatic.** Anything that must be undone implements `Drop`:
+### Async is quarantined
+
+turso's API is async only. Rather than colour the whole program, `db.rs` owns a single
+threaded tokio runtime and blocks on every call. Everything outside that file is ordinary
+synchronous Rust.
+
+### Cleanup is automatic
+
+Anything that must be undone implements `Drop`, so it is undone even on an early return or
+a panic.
 
 | Type | Undoes |
-|---|---|
-| `WorkerCopy` | Deletes the temp project copy |
+| --- | --- |
+| `WorkerCopy` | Deletes the temporary project copy |
 | `PatchedFiles` | Restores mutated files |
 | `WarmWorker` | Kills the pytest process |
 
-`Drop` cannot return errors. `PatchedFiles` swallows a failed restore on purpose — the
-next batch's original-bytes check turns it into an `error` verdict rather than a wrong one.
+`Drop` cannot return errors. `PatchedFiles` therefore swallows a failed restore on
+purpose: the next batch checks the original bytes before patching, so a bad restore
+becomes an `error` verdict rather than a wrong one.
 
 ## Concurrency
 
 ```mermaid
 flowchart LR
-    subgraph main thread
-    Q[AtomicUsize<br/>next batch] 
-    D[(database)]
-    end
-    W1[Worker 1] -->|mpsc| D
-    W2[Worker 2] -->|mpsc| D
-    W3[Worker N] -->|mpsc| D
-    Q -.-> W1
-    Q -.-> W2
-    Q -.-> W3
+    Q[shared counter:<br/>next batch] -.-> W1[worker 1]
+    Q -.-> W2[worker 2]
+    Q -.-> W3[worker N]
+    W1 -->|channel| D[(main thread<br/>owns the database)]
+    W2 -->|channel| D
+    W3 -->|channel| D
 ```
 
-`std::thread::scope` + one `AtomicUsize` as the work queue + `mpsc` for results. **The
-main thread owns every database write**, so no locking anywhere.
+Scoped threads, one atomic integer as the work queue, and a channel for results. **Every
+database write happens on the main thread**, so there is no locking anywhere in the
+program.
 
-`thread::scope` is what lets `Worker<'a>` hold plain references instead of `Arc` — the
-compiler proves the threads end before the borrowed data does.
+Scoped threads are also what allow a worker to hold plain references rather than reference
+counted pointers, because the compiler can prove the threads finish before the borrowed
+data goes away.
 
-## Data, not string blobs
+## Data lives in data files
 
-| File | Why |
-|---|---|
-| `db/schema.sql` | SQL is SQL. `include_str!`ed. |
-| `runner/worker.py` | Python is Python. `include_str!`ed, written into the copy. |
+| File | Reason |
+| --- | --- |
+| `db/schema.sql` | SQL should be SQL, not a string constant |
+| `runner/worker.py` | Python should be Python |
 
-The operator table in `mutate.rs` is a `macro_rules!` so the lookup and its test list are
-generated from the same lines and cannot drift.
+Both are embedded into the binary at compile time, so there is still only one file to
+ship.
 
-## Dependencies (10)
+The operator table is a macro, so the lookup and the list its tests iterate are generated
+from the same lines and cannot drift apart.
+
+## Dependencies
 
 | Group | Crates |
-|---|---|
+| --- | --- |
 | Plumbing | clap, serde, toml, anyhow |
 | Database | turso, tokio |
 | Python parsing | ruff_python_parser, ruff_python_ast, ruff_text_size |
 | junit XML | roxmltree |
 
-Largest modules: `runner.rs` (443), `coverage.rs` (414), `pytest.rs` (327). Every module
-carries its own `#[cfg(test)] mod tests`; `tests/end_to_end.rs` drives the real binary.
-
-Cut by hand-rolling: `walkdir` (12-line recursive copy), `tempfile` (a `Drop` impl),
-`serde_json` (newline-joined lists, and a 20-line reply parser).
+Three were removed by hand rolling small replacements: `walkdir` became a twelve line
+recursive copy, `tempfile` became a `Drop` implementation, and `serde_json` became a
+newline joined list plus a twenty line reply parser.

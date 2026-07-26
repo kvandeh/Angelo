@@ -156,7 +156,7 @@ operators! {
 }
 
 /// Symmetric string methods, from mutmut's list. Only swapped when the name is
-/// an attribute — `x.lower()` is a method call, a bare `lower` is not.
+/// an attribute, `x.lower()` is a method call, a bare `lower` is not.
 const METHOD_SWAPS: &[(&str, &str)] = &[
     ("lower", "upper"),
     ("upper", "lower"),
@@ -233,7 +233,7 @@ fn string_variants(text: &str) -> Vec<String> {
     let mut variants = vec![format!("{prefix}{quote}XX{inner}XX{quote}")];
     for cased in [inner.to_uppercase(), inner.to_lowercase()] {
         // Case flips only mean something when they change the string, and
-        // escapes must not be touched — a lone backslash would break syntax.
+        // escapes must not be touched, a lone backslash would break syntax.
         if cased != inner && !inner.contains('\\') {
             variants.push(format!("{prefix}{quote}{cased}{quote}"));
         }

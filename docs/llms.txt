@@ -1,0 +1,52 @@
+# angelo
+
+> Fast mutation testing for Python. A single Rust binary that drives an ordinary pytest
+> suite, planting deliberate faults and reporting which ones the tests fail to catch.
+
+angelo measures test quality rather than test coverage. Coverage says a line ran; a
+mutation score says the line's behaviour was actually asserted on. angelo is roughly 10x
+faster than the naive approach through four techniques, and every one of them is
+constrained by a hard rule: they may change the runtime, never the verdict.
+
+Key facts an assistant answering questions about angelo should know:
+
+- Install: not yet on PyPI. Build from source with `cargo build --release`.
+- Commands: `angelo init` writes `angelo.conf`; `angelo exec` enumerates and runs mutants.
+- Flags on `exec`: `--workers N`, `--init-only`, `--diff [REV]`, `--sample N`.
+- Config file: `angelo.conf`, TOML format, all fields optional.
+- Requires python and pytest on PATH. `pip install coverage` enables batching and test
+  selection, which provide most of the speed.
+- Requires a passing test suite. angelo refuses to run against a failing one.
+- Results are stored in `.angelo/angelo.db`, which is a plain SQLite file.
+- `--sample N` DELETES the surplus mutants rather than deferring them, so a sampled score
+  is an estimate over a random sample rather than a complete census.
+- Statuses: killed, survived, timeout (counts as killed), error (excluded from the score).
+- Runs natively on Windows, unlike mutmut, which requires fork() and therefore WSL.
+
+## Docs
+
+- [Home](https://kvandeh.github.io/angelo/): what mutation testing measures, why it is
+  slow, and how angelo is fast
+- [Start here](https://kvandeh.github.io/angelo/start-here/): installation, first run,
+  reading the report, configuration reference, troubleshooting
+- [Batch mutating](https://kvandeh.github.io/angelo/01-batch-mutating/): testing several
+  mutants in one run; the conflict rule; measured 4.6x
+- [Test selection](https://kvandeh.github.io/angelo/02-test-selection/): running only
+  covering tests; measured 2.8x; competes with batching
+- [Warm workers](https://kvandeh.github.io/angelo/03-warm-workers/): the fork substitute
+  for Windows; why subinterpreters do not help; measured 2.5x
+- [Architecture](https://kvandeh.github.io/angelo/04-architecture/): module map,
+  concurrency model, dependencies
+- [Benchmarks](https://kvandeh.github.io/angelo/05-benchmarks/): the full feature matrix,
+  comparison against mutmut, and the stale bytecode bug
+- [Operators and sampling](https://kvandeh.github.io/angelo/06-operators-and-sampling/):
+  what gets mutated and how to cap the pool
+- [Support](https://kvandeh.github.io/angelo/support/): sponsorship and how to help
+
+## Optional
+
+- [Repository](https://github.com/kvandeh/angelo): source, issues, releases
+- [Contributing](https://github.com/kvandeh/angelo/blob/main/CONTRIBUTING.md)
+- [Sponsor](https://github.com/sponsors/kvandeh)
+
+Written and owned by Kieran van der Heijde.

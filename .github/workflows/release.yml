@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [master, main]
+    branches: [main]
 
 permissions:
   contents: write
@@ -11,7 +11,7 @@ jobs:
   release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Need the merge commit's parents to read its message.
           fetch-depth: 0
@@ -55,7 +55,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         if: steps.existing.outputs.skip == 'false'
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.1
         if: steps.existing.outputs.skip == 'false'
 
       - name: Build angelo.exe
@@ -70,7 +70,7 @@ jobs:
 
       - name: Publish
         if: steps.existing.outputs.skip == 'false'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: angelo ${{ steps.version.outputs.version }}

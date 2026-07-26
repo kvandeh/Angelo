@@ -191,7 +191,7 @@ pub struct CoverageRow {
     pub numbits: Vec<u8>,
 }
 
-/// Read coverage.py's data file — it is SQLite, so turso opens it directly.
+/// Read coverage.py's data file, it is SQLite, so turso opens it directly.
 pub fn read_coverage_rows(path: &Path) -> Result<Vec<CoverageRow>> {
     let path = path.to_str().context("coverage path is not valid UTF-8")?;
     let runtime = new_runtime()?;

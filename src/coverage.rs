@@ -25,9 +25,9 @@ pub struct Coverage {
 pub enum TestCoverage {
     /// Executed by these test contexts.
     Tested(HashSet<i64>),
-    /// Executed only at import time — affects every test, cannot batch.
+    /// Executed only at import time, affects every test, cannot batch.
     ImportOnly,
-    /// Never executed — no test can kill it.
+    /// Never executed, no test can kill it.
     Untested,
 }
 
@@ -131,7 +131,7 @@ impl Coverage {
     }
 
     /// The tests that can possibly kill this batch. Falls back to the whole
-    /// suite whenever a member's tests cannot be named exactly — running too
+    /// suite whenever a member's tests cannot be named exactly, running too
     /// many tests is slow, running too few would invent survivors.
     pub fn select(&self, mutants: &[&Mutant]) -> Selection {
         let mut test_ids = HashSet::new();

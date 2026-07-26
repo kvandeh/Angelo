@@ -18,11 +18,11 @@ four sides:
 
 | Feature | What it skips | Measured |
 |---|---|---|
-| [Batch mutating](docs/01-batch-mutating.md) | Runs — several mutants per run | 4.6x |
-| [Test selection](docs/02-test-selection.md) | Tests — only those that cover the mutant | 2.8x |
-| [Warm workers](docs/03-warm-workers.md) | Python startup — one live pytest process | 2.5x |
-| `--diff` | Mutants — only lines you changed | scope-dependent |
-| [`--sample N`](docs/06-operators-and-sampling.md) | Mutants — a random N of them | scope-dependent |
+| [Batch mutating](docs/01-batch-mutating.md) | Runs, several mutants per run | 4.6x |
+| [Test selection](docs/02-test-selection.md) | Tests, only those that cover the mutant | 2.8x |
+| [Warm workers](docs/03-warm-workers.md) | Python startup, one live pytest process | 2.5x |
+| `--diff` | Mutants, only lines you changed | scope-dependent |
+| [`--sample N`](docs/06-operators-and-sampling.md) | Mutants, a random N of them | scope-dependent |
 
 The [operator set](docs/06-operators-and-sampling.md) matches mutmut's: **63 mutants to
 mutmut's 61** on the same file.
@@ -34,7 +34,7 @@ Coverage also retires mutants for free: one no test executes **survives without 
 ## The rule
 
 Every one of those is a **speed feature only**. Batching, selection and warm workers must
-never change a verdict — `scripts/verdict-matrix.sh` runs 8 configurations in CI and fails
+never change a verdict, `scripts/verdict-matrix.sh` runs 8 configurations in CI and fails
 the build if any disagrees.
 
 ## Usage
@@ -56,7 +56,7 @@ angelo exec --sample 500    # keep 500 mutants, drop the rest at random
 sample of the whole codebase, and the score is an estimate over that sample. See
 [note 06](docs/06-operators-and-sampling.md).
 
-Results land in `.angelo/angelo.db` — plain SQLite format, open it with anything.
+Results land in `.angelo/angelo.db`, plain SQLite format, open it with anything.
 
 ## Requirements
 
@@ -65,7 +65,7 @@ without it angelo still works, one mutant per run.
 
 ## Docs
 
-[docs/](docs/) — one short note per idea, each written as abstract → background → method →
+[docs/](docs/), one short note per idea, each written as abstract → background → method →
 result → limits.
 
 ## Status

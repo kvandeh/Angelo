@@ -1,115 +1,118 @@
-# 05 — Benchmarks
+# Benchmarks
 
-**Abstract.** angelo's optimisations were measured on a synthetic 200-mutant project and
-on real repositories in `extra/`. Stacked, they give **10.8x** with unchanged verdicts.
-This note also records what the numbers do *not* prove, and one bug that made earlier
-numbers lies.
+!!! abstract "In one sentence"
+    Stacked, angelo's optimisations take a 48 second job down to 4.5 seconds with
+    unchanged verdicts. This note records the measurements, the comparison against mutmut,
+    and one bug that made an earlier set of numbers false.
 
 ## Method
 
-- **Machine:** WSL Ubuntu on Windows 11, 16 cores, Python 3.14.
-- **Synthetic project:** 40 independent functions, one test each, 200 mutants. A
+- **Machine.** WSL Ubuntu on Windows 11, 16 cores, Python 3.14.
+- **Synthetic project.** Forty independent functions, one test each, 200 mutants. A
   `conftest.py` sleep sets the suite length, so the same mutant pool can be measured
-  against a fast and a slow suite.
-- **Control:** the score. Every configuration must produce the same one.
-- Numbers are single runs, not averages. Treat differences under ~10% as noise.
+  against a fast suite and a slow one.
+- **Control.** The score. Every configuration must produce the same one.
+- Single runs, not averages. Treat any difference under about 10 percent as noise.
 
-## Result: the feature matrix
+## The feature matrix
 
-200 mutants, 8 workers.
+Two hundred mutants, eight workers.
 
-| suite | batch | selection | warm | time | score |
-|---|---|---|---|---|---|
-| 0.2s | 1 | off | off | 15.88s | 39.5% |
-| 0.2s | 8 | on | off | 3.99s | 39.5% |
-| 0.2s | 8 | on | **on** | **2.16s** | 39.5% |
-| 2.0s | 1 | off | off | 48.13s | 39.5% |
-| 2.0s | 8 | on | off | 6.22s | 39.5% |
-| 2.0s | 8 | on | **on** | **4.45s** | 39.5% |
+| Suite | Batch | Selection | Warm | Time | Score |
+| --- | --- | --- | --- | --- | --- |
+| 0.2 s | 1 | off | off | 15.88 s | 39.5% |
+| 0.2 s | 8 | on | off | 3.99 s | 39.5% |
+| 0.2 s | 8 | on | on | **2.16 s** | 39.5% |
+| 2.0 s | 1 | off | off | 48.13 s | 39.5% |
+| 2.0 s | 8 | on | off | 6.22 s | 39.5% |
+| 2.0 s | 8 | on | on | **4.45 s** | 39.5% |
 
-**10.8x on the slow suite, 7.4x on the fast one.** Verdicts never moved.
+**10.8x on the slow suite, 7.4x on the fast one.** The score never moved.
 
-## Result: where a run's time goes
+## Where a run's time goes
 
-One selected single-test run, measured by isolating each step:
+One selected single test run, measured by isolating each step:
 
 ```mermaid
 pie showData
     title One 327ms selected run
     "interpreter start" : 18
     "import pytest" : 155
-    "collect + configure" : 139
+    "collect and configure" : 139
     "the actual test" : 15
 ```
 
-**95% overhead.** This is why warm workers exist, and why test selection alone plateaus.
+About 95 percent is overhead. This is why [warm workers](03-warm-workers.md) exist, and
+why [test selection](02-test-selection.md) alone reaches a ceiling.
 
 ## Which feature pays when
 
-| | fast suite | slow suite |
-|---|---|---|
+| Feature | Fast suite | Slow suite |
+| --- | --- | --- |
 | Batching | 3.7x | 4.6x |
 | Test selection | 1.05x | 2.8x |
 | Warm workers | 2.5x | 1.9x |
 
-Read it as a rule: **selection removes test time, warm workers remove startup time.**
-Projects with slow suites want the first; projects with many cheap tests want the second.
-Batching helps both, and partly competes with selection (see [note 02](02-test-selection.md)).
+The rule of thumb: **selection removes test time, warm workers remove startup time.** A
+project with a slow suite wants the first. A project with many cheap tests wants the
+second. Batching helps both, though it partly competes with selection.
 
-## Comparison: mutmut
+## Comparison against mutmut
 
-Same box, same project, both at 8 workers.
+Same machine, same project, both at eight workers.
 
-| | mutants | wall | per mutant |
-|---|---|---|---|
-| angelo (batch=16) | 200 | 2.5s | 0.0125s |
-| mutmut 3.6.0 | 360 | 3.7s | **0.0103s** |
+| Tool | Mutants | Wall time | Per mutant |
+| --- | --- | --- | --- |
+| angelo, batch 16 | 200 | 2.5 s | 0.0125 s |
+| mutmut 3.6.0 | 360 | 3.7 s | **0.0103 s** |
 
-**mutmut is ~1.2x cheaper per mutant.** It uses schemata plus `fork()`; angelo is close
-without either. Operator sets differ, so per-mutant cost is the only fair column.
+**mutmut is about 1.2x cheaper per mutant.** It uses schemata plus `fork()`; angelo comes
+close with neither. The operator sets differ, so per mutant cost is the only fair column.
 
-mutmut **cannot run on Windows at all** — it requires `fork()` and tells you to use WSL.
+mutmut **cannot run on Windows at all**, because it requires `fork()`.
 
-## The bug that made earlier numbers lies
+## The bug that made earlier numbers false
 
-Four configurations that must agree reported **77 / 73 / 69 / 78** killed.
+Four configurations that must agree reported **77, 73, 69 and 78** kills.
 
-A `.pyc` is reused when the source's `(mtime_seconds, size)` still match. Same-size
-splices — `+`→`-`, `*`→`/` — written in the same second as the previous one ran the **old
-bytecode**, so the mutant survived for free.
+A `.pyc` file is reused when the source's recorded modification time in whole seconds and
+its byte size both still match. Same size replacements, such as `+` becoming `-`, written
+in the same second as the previous one, therefore ran the **old bytecode**. The mutant
+survived for free.
 
-- Invisible on Windows: a 1.9s suite pushes writes into different seconds.
-- Obvious on Linux: a 0.2s suite lands many runs inside one second.
-- Fixed with `PYTHONDONTWRITEBYTECODE=1`. Note that flag alone is **not** enough if a
-  `.pyc` already exists — Python still reads it.
+- Invisible on Windows, where a 1.9 second suite pushes writes into different seconds.
+- Obvious on Linux, where a 0.2 second suite lands many runs inside one second.
+- Fixed by never writing bytecode. Note that the environment variable alone is **not**
+  sufficient if a `.pyc` already exists, because Python still reads it.
 
-**Lesson:** a mutation tester's failure mode is inventing test gaps that do not exist.
-The verdict matrix in CI exists because of this.
+The lesson is worth stating plainly: a mutation tester's characteristic failure is
+inventing test gaps that do not exist. The verdict matrix in continuous integration exists
+because of this bug.
 
 ## What these numbers do not prove
 
-- The synthetic project has **independent functions with disjoint tests** — the best case
-  for batching. Real code shares tests, so expect less.
-- Single runs on one machine. No confidence intervals.
-- Windows process spawn is far slower than Linux; only compare within a platform.
-- A tool that dies instantly on every mutant looks fast and scores 0. **Check the `error`
-  count before trusting any score.**
+- The synthetic project has **independent functions with disjoint tests**, which is the
+  best possible case for batching. Real code shares tests, so expect less.
+- Single runs on one machine, with no confidence intervals.
+- Windows process spawning is far slower than Linux. Only compare within a platform.
+- A tool that dies instantly on every mutant looks fast and scores zero. **Check the
+  error count before trusting any score.**
 
 ## Reproducing
 
-```
-bash scripts/verdict-matrix.sh          # correctness gate, runs in CI
-bash scripts/setup-extra.sh             # a venv per repo in extra/
-bash scripts/bench-repo.sh extra/click  # feature matrix on a real project
+```bash
+bash scripts/verdict-matrix.sh          # the correctness gate, runs in CI
+bash scripts/setup-extra.sh             # a virtualenv per repository in extra/
+bash scripts/bench-repo.sh extra/click  # the feature matrix on a real project
 ```
 
 `extra/` holds gitignored shallow clones of click, flask, httpx, requests, fastapi and
 django.
 
-**Each needs its own venv.** Real projects pin pytest plugins in `pyproject.toml`; run
-them against a global Python and pytest exits 3 (internal error) before collecting
-anything. angelo then refuses to start — correctly, but the fix is dependencies, not
-angelo. `setup-extra.sh` does this and reports which repos collect cleanly.
+**Each needs its own virtualenv.** Real projects pin pytest plugins in `pyproject.toml`.
+Run them against a global Python and pytest exits 3, an internal error, before collecting
+anything. angelo then refuses to start, correctly, but the fix is dependencies rather than
+angelo.
 
-**django is cloned but not mutable by angelo**: it uses its own `runtests.py`, not pytest.
-It would need pytest-django and a settings module first.
+**django is cloned but angelo cannot mutate it**, because it uses its own test runner
+rather than pytest.

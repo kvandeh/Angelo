@@ -139,7 +139,7 @@ fn is_mutation_target(path: &Path) -> bool {
 
 pub fn init() -> Result<()> {
     if Path::new(CONFIG_FILE).exists() {
-        bail!("{CONFIG_FILE} already exists — delete it first for a fresh one");
+        bail!("{CONFIG_FILE} already exists. Delete it first for a fresh one");
     }
     let config = Config::detect();
     write(&config)?;
@@ -149,7 +149,7 @@ pub fn init() -> Result<()> {
 
 pub fn load_or_init() -> Result<Config> {
     if !Path::new(CONFIG_FILE).exists() {
-        println!("no {CONFIG_FILE} found — generating one");
+        println!("no {CONFIG_FILE} found, generating one");
         let config = Config::detect();
         write(&config)?;
         return Ok(config);

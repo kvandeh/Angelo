@@ -69,7 +69,7 @@ impl Summary {
         self.detected
     }
 
-    /// Error mutants are excluded — they never got a fair trial.
+    /// Error mutants are excluded, they never got a fair trial.
     fn scored(&self) -> i64 {
         self.detected + self.survived
     }
@@ -99,13 +99,13 @@ pub fn print_summary(counts: &[(String, i64)], survivors: &[Mutant]) {
     }
     if summary.error > 0 {
         println!(
-            "note: {} error mutants sit outside the score — a broken test command also looks like this, so check one before trusting the numbers",
+            "note: {} error mutants sit outside the score, a broken test command also looks like this, so check one before trusting the numbers",
             summary.error
         );
     }
     if summary.pending > 0 {
         println!(
-            "note: {} mutants still pending — re-run `angelo exec` to resume",
+            "note: {} mutants still pending, re-run `angelo exec` to resume",
             summary.pending
         );
     }

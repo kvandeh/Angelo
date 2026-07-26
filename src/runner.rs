@@ -155,7 +155,7 @@ impl<'a> Worker<'a> {
 
     /// Green run: everyone survived. Red run: a failed test kills the batch
     /// member it covers. When a result cannot be attributed (timeout, crash,
-    /// a failure no member explains), split in half and re-run — a verdict
+    /// a failure no member explains), split in half and re-run, a verdict
     /// must come from a run that proves it.
     fn judge(&self, mutants: &[&Mutant]) -> Listening {
         let started = Instant::now();
@@ -213,7 +213,7 @@ impl<'a> Worker<'a> {
         }
     }
 
-    /// None means warm running is off, unavailable, or just failed — the caller
+    /// None means warm running is off, unavailable, or just failed, the caller
     /// then pays for a fresh subprocess, which is always correct.
     fn run_warm(&self, selection: &Selection) -> Option<RunReport> {
         if !self.runner.warm_workers {
@@ -338,7 +338,7 @@ fn splice_all(source: &str, mutants: &[&Mutant], file: &Path) -> Result<String> 
     for mutant in mutants {
         if source.get(mutant.byte_start..mutant.byte_end) != Some(mutant.original.as_str()) {
             bail!(
-                "{} changed since enumeration — delete .angelo/ and re-run",
+                "{} changed since enumeration, delete .angelo/ and re-run",
                 file.display()
             );
         }

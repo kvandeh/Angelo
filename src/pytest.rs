@@ -38,10 +38,10 @@ impl SuiteResult {
     pub fn explain(&self) -> Option<String> {
         match self {
             SuiteResult::Finished(5) => Some(
-                "pytest collected no tests — a selected test id may no longer exist".to_string(),
+                "pytest collected no tests, a selected test id may no longer exist".to_string(),
             ),
             SuiteResult::Finished(code) if self.status() == Status::Error => Some(format!(
-                "pytest exited with {code} — usually a mutant that broke the syntax or an import"
+                "pytest exited with {code}, usually a mutant that broke the syntax or an import"
             )),
             _ => None,
         }
@@ -49,7 +49,7 @@ impl SuiteResult {
 }
 
 /// Which tests one run should execute. Empty ids mean the whole suite, which is
-/// always safe — selection can only ever be an optimisation.
+/// always safe, selection can only ever be an optimisation.
 pub struct Selection {
     pub test_ids: Vec<String>,
     /// Only for a run judging a single mutant: the first failure settles it, so
@@ -143,15 +143,15 @@ pub fn run_baseline(
 fn diagnose_baseline(code: i64) -> &'static str {
     match code {
         1 => {
-            "Tests are failing. Fix them first — angelo can only tell you what a passing suite misses."
+            "Tests are failing. Fix them first, angelo can only tell you what a passing suite misses."
         }
         2 => "pytest was interrupted.",
         3 => {
             "pytest hit an internal error, usually a plugin or config problem: an option in \
               pyproject.toml/pytest.ini that belongs to a plugin you have not installed."
         }
-        4 => "pytest usage error — check test_command in angelo.conf.",
-        5 => "pytest collected no tests — check test_command and its path in angelo.conf.",
+        4 => "pytest usage error, check test_command in angelo.conf.",
+        5 => "pytest collected no tests, check test_command and its path in angelo.conf.",
         _ => "pytest could not run the suite.",
     }
 }
@@ -242,7 +242,7 @@ fn build_command(test_command: &[String], cwd: &Path) -> Result<Command> {
     Ok(command)
 }
 
-/// Where the baseline writes its report — under .angelo, never the user's tree.
+/// Where the baseline writes its report, under .angelo, never the user's tree.
 pub fn baseline_junit_path(angelo_dir: &Path) -> PathBuf {
     angelo_dir.join("baseline-junit.xml")
 }

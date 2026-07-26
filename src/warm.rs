@@ -16,7 +16,7 @@ const DRIVER_FILE: &str = "angelo-worker.py";
 const REPLY_PREFIX: &str = "##angelo##";
 
 /// A pytest process kept alive across mutants. Saves the ~300ms of interpreter
-/// start plus pytest import that every fresh run repays — the cost fork()
+/// start plus pytest import that every fresh run repays, the cost fork()
 /// avoids on Unix and Windows cannot.
 ///
 /// Everything here is best-effort: any timeout, crash, or unparseable reply

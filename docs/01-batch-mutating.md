@@ -1,69 +1,111 @@
-# 01 — Batch mutating
+# Batch mutating
 
-**Abstract.** Mutation testing normally runs the test suite once per mutant. angelo
-applies several mutants at once and judges them in a single run. Mutants that share a
-covering test are kept apart, so every failure still points at exactly one mutant.
-Measured at **4.6x** with no change to the score.
+!!! abstract "In one sentence"
+    angelo plants several faults at once and judges them in a single test run, grouping
+    only faults that no test can reach together. Measured at **4.6x faster** with an
+    identical score.
 
-## Background
+## The problem
 
-One mutant, one suite run. 500 mutants, 500 runs. Each run repays Python's startup cost
-before testing anything.
+Mutation testing plants one fault, runs the suite, records the verdict, and repeats. The
+cost is therefore the number of faults multiplied by the cost of one suite run. Five
+hundred faults on a two second suite is about seventeen minutes, and most of that time is
+spent starting Python rather than testing anything.
 
-Prior work combined mutants blindly and accepted the error. Polo et al. (2009) paired
-first-order mutants into second-order ones, halving runs at the cost of **fault masking**:
-two faults in one execution can hide each other, so a verdict is lost.
+The obvious saving is to plant more than one fault per run. The obvious problem is that
+you then cannot tell which fault broke which test.
 
-angelo avoids masking instead of tolerating it.
+## Why naive combining fails
 
-## Method
+This has been tried. Polo, Piattini and García-Rodríguez (2009) combined first order
+faults into pairs, halving the number of runs. They accepted a known cost, called **fault
+masking**: when two faults are active in one execution, one can hide the other, and the
+verdict for at least one of them is lost.
 
-Masking needs one test to execute both mutants. So: **two mutants conflict when the same
-test case covers both.** A batch holds only mutants that share no test.
+angelo takes a different route. Rather than tolerating masking, it arranges for masking to
+be impossible.
 
-Conflicts come from one coverage.py run over the unmutated code, with
-`dynamic_context = test_function` — that records which test executed which line.
+## The insight
+
+Masking requires a single test to execute both faults. If no test touches both, neither
+can hide the other, and any failure is unambiguous.
+
+That gives the rule:
+
+!!! note "Definition"
+    Two mutants **conflict** when the same test case executes both of them. A **batch** is
+    a set of mutants that pairwise do not conflict.
+
+Note what the rule is built on. It is not about the structure of the source code, whether
+two faults sit in the same function, or the same file. It is about **the tests**, because
+the tests are the thing being measured.
+
+## Where the conflict data comes from
+
+One coverage run, before any mutating begins. angelo runs your suite once under
+coverage.py with `dynamic_context = test_function`, which records not just which lines
+ran, but which test ran them.
+
+That produces a map from every line to the set of tests that execute it. Two mutants
+conflict when those sets overlap.
+
+The same map pays for itself three more times over. A mutant on a line no test executes
+cannot be killed, so it is marked survived without ever running. A mutant executed only
+at import time affects every test, so it runs alone. And the map tells angelo which tests
+to run at all, which is [test selection](02-test-selection.md).
+
+## Judging a batch
 
 ```mermaid
 flowchart TD
-    A[run the batch] --> B{green?}
-    B -->|yes| C[every member survived]
-    B -->|no| D{can each failure be<br/>charged to one member?}
-    D -->|yes| E[those members killed<br/>the rest survived]
-    D -->|no| F[split in half<br/>re-run both halves]
+    A[run the batch] --> B{did anything fail?}
+    B -->|no| C[every member survived]
+    B -->|yes| D{can each failing test<br/>be charged to one member?}
+    D -->|yes| E[those members killed,<br/>the rest survived]
+    D -->|no| F[split the batch in half,<br/>run both halves]
     F --> A
 ```
 
-Three outcomes, three rules:
+Three cases, three rules:
 
-- **Green** — nothing failed, so every member survived. One run, many verdicts.
-- **Red and attributable** — each failed test is charged to the one member covering it.
-- **Anything else** — timeout, crash, or a failure no member explains → **bisect**.
+1. **Nothing failed.** No test objected to any of the faults, so every member survived.
+   One run, many verdicts. This is where the saving comes from.
+2. **Something failed, and every failure is explainable.** Each failing test is charged to
+   the single batch member that it covers. Members whose tests all passed survived.
+3. **Anything else.** A timeout, a crash, or a failure that no member explains. angelo
+   refuses to guess. It splits the batch and runs both halves.
 
-Bisection is the safety net. A verdict only ever comes from a run that proves it.
+Case three is the safety net. It means a verdict only ever comes from a run that proves
+it, and it is why an unexpected result costs speed rather than accuracy.
 
 ## Result
 
-200 mutants, 8 workers, 2s suite:
+Two hundred mutants, eight workers, two second suite.
 
-| batch_size | time | score |
-|---|---|---|
-| 1 | 48.1s | 39.5% |
-| 8 | 10.4s | 39.5% |
+| batch size | time | score |
+| --- | --- | --- |
+| 1 | 48.1 s | 39.5% |
+| 8 | 10.4 s | 39.5% |
 
-**4.6x, identical verdicts.** 161 runs collapsed into 21.
+**4.6x faster, identical verdicts.** One hundred and sixty one runs collapsed into
+twenty one.
 
 ## Limits
 
-- Needs coverage.py and the default pytest command. Without them, batches are size 1 and
-  everything still works.
-- Mutants executed only at import time affect every test, so they run alone.
-- Batching and test selection compete — see [note 02](02-test-selection.md).
-- A batch that goes red on a suite with heavy shared state bisects often, eating the win.
+- Batching needs coverage.py and the default pytest command. Without them every batch has
+  one member, and angelo still works.
+- Mutants that run at import time cannot be batched, because import time code executes
+  under every test.
+- Batching and [test selection](02-test-selection.md) compete for the same saving. Read
+  that note before tuning `batch_size`.
+- A suite with heavy shared state produces unexplainable failures, which trigger splitting
+  and erode the gain.
 
-## Prior art
+## Related work
 
-- Untch, Offutt & Harrold (1993) — mutant schemata.
-- Polo, Piattini & García-Rodríguez (2009) — second-order mutants; the masking problem.
-- Ma & Kim (2016) — "overlapped mutants" means near-duplicates, a *different* idea.
-- mutest-rs — same batching idea for Rust, conflicts from a static call graph instead.
+| Source | Relationship |
+| --- | --- |
+| Untch, Offutt and Harrold (1993) | Mutant schemata, the classic cost reduction |
+| Polo, Piattini and García-Rodríguez (2009) | Second order mutants, and the masking problem this note avoids |
+| Ma and Kim (2016) | "Overlapped mutants" means near duplicates, a different idea despite the similar name |
+| mutest-rs | The same batching idea for Rust, deriving conflicts from a static call graph rather than coverage |
