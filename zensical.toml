@@ -1,21 +1,17 @@
 [project]
-site_name = "angelo"
+site_name = "Angelo"
 site_description = "Python mutation testing is slow and expensive, but what if it wasn't?"
 site_author = "Kieran van der Heijde"
 site_url = "https://kvandeh.github.io/angelo/"
 repo_url = "https://github.com/kvandeh/angelo"
 repo_name = "kvandeh/angelo"
 
-copyright = """
-Written and owned by <strong>Kieran van der Heijde</strong>.
-<a href="https://www.linkedin.com/in/kcvdh">LinkedIn</a> &middot;
-<a href="https://github.com/kvandeh/angelo">GitHub</a> &middot;
-<a href="https://github.com/sponsors/kvandeh">Sponsor</a>
-"""
+# The social icons carry the links, so the text does not repeat them.
+copyright = "Written and owned by <strong>Kieran van der Heijde</strong>"
 
 nav = [
   { "Home" = "index.md" },
-  { "Start here" = "start-here.md" },
+  { "Quick Start" = "quick-start.md" },
   { "Batch mutating" = "01-batch-mutating.md" },
   { "Test selection" = "02-test-selection.md" },
   { "Warm workers" = "03-warm-workers.md" },

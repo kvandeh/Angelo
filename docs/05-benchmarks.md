@@ -1,7 +1,7 @@
 # Benchmarks
 
 !!! abstract "In one sentence"
-    Stacked, angelo's optimisations take a 48 second job down to 4.5 seconds with
+    Stacked, Angelo's optimisations take a 48 second job down to 4.5 seconds with
     unchanged verdicts. This note records the measurements, the comparison against mutmut,
     and one bug that made an earlier set of numbers false.
 
@@ -57,16 +57,66 @@ The rule of thumb: **selection removes test time, warm workers remove startup ti
 project with a slow suite wants the first. A project with many cheap tests wants the
 second. Batching helps both, though it partly competes with selection.
 
+## A real codebase, where the numbers do not hold
+
+The synthetic result does not survive contact with click. 957 mutants, a 4.21 second
+suite, eight workers.
+
+| Batch | Selection | Warm | Time | Per mutant | Detected | Survived |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | off | off | 1119 s | 1.170 s | 540 | 336 |
+| 1 | on | off | 1189 s | 1.242 s | 540 | 336 |
+| 8 | on | off | 1130 s | 1.181 s | 541 | 335 |
+
+**The optimisations bought essentially nothing, and test selection was slightly slower
+than no selection at all.** Every configuration lands near 1.2 seconds per mutant.
+
+The likely cause is visible in the verdicts. Between 60 and 76 mutants **time out** on
+every run. A timeout costs the full timeout budget, here about 22 seconds, and no amount
+of batching or test selection shortens it. On click, waiting for timeouts dominates
+everything the optimisations save.
+
+The synthetic project has no timeouts at all, which is precisely why it showed 10.8x.
+
+!!! warning "Read the synthetic numbers as an upper bound"
+    Independent functions, disjoint tests, and no timeouts is the best case for every
+    technique in this tool. A real project with slow or hanging mutants can see no
+    speedup whatsoever.
+
+### Verdicts moved slightly, and why that is not the batching bug
+
+The three rows disagree: 540, 540 and 541 detected; 336, 336 and 335 survived.
+
+This is **timeout classification**, not misattribution. A mutant sitting near the timeout
+threshold is detected on a loaded machine and survives on an idle one, because
+`timeout_factor` is a wall clock budget. The kill and timeout columns also trade against
+each other between runs for the same reason.
+
+The [verdict matrix](https://github.com/kvandeh/angelo/blob/main/scripts/verdict-matrix.sh)
+that runs in continuous integration uses a fixture with no timeouts, so it cannot catch
+this class of variation. That is a known gap rather than a passing grade.
+
+### An invalid fourth row
+
+A fourth configuration was measured, but the operator set was expanded while the
+benchmark was running, so it planted 4596 mutants instead of 957. It is excluded here
+rather than reported, because it compares two different tools.
+
+### flask
+
+Skipped. Its suite is not green on this machine out of the box, and Angelo will not run
+against a red baseline.
+
 ## Comparison against mutmut
 
 Same machine, same project, both at eight workers.
 
 | Tool | Mutants | Wall time | Per mutant |
 | --- | --- | --- | --- |
-| angelo, batch 16 | 200 | 2.5 s | 0.0125 s |
+| Angelo, batch 16 | 200 | 2.5 s | 0.0125 s |
 | mutmut 3.6.0 | 360 | 3.7 s | **0.0103 s** |
 
-**mutmut is about 1.2x cheaper per mutant.** It uses schemata plus `fork()`; angelo comes
+**mutmut is about 1.2x cheaper per mutant.** It uses schemata plus `fork()`; Angelo comes
 close with neither. The operator sets differ, so per mutant cost is the only fair column.
 
 mutmut **cannot run on Windows at all**, because it requires `fork()`.
@@ -111,8 +161,8 @@ django.
 
 **Each needs its own virtualenv.** Real projects pin pytest plugins in `pyproject.toml`.
 Run them against a global Python and pytest exits 3, an internal error, before collecting
-anything. angelo then refuses to start, correctly, but the fix is dependencies rather than
-angelo.
+anything. Angelo then refuses to start, correctly, but the fix is dependencies rather than
+Angelo.
 
-**django is cloned but angelo cannot mutate it**, because it uses its own test runner
+**django is cloned but Angelo cannot mutate it**, because it uses its own test runner
 rather than pytest.

@@ -4,14 +4,14 @@ This page takes you from nothing to a mutation score, then explains how to read 
 
 ## Before you begin
 
-angelo drives your existing suite, so it needs three things:
+Angelo drives your existing suite, so it needs three things:
 
 1. **python and pytest on your PATH.**
-2. **A green suite.** angelo refuses to start otherwise, because a failing test cannot
-   tell you anything about a planted fault. If pytest exits non zero, angelo explains
+2. **A green suite.** Angelo refuses to start otherwise, because a failing test cannot
+   tell you anything about a planted fault. If pytest exits non zero, Angelo explains
    which kind of failure it saw and stops.
 3. **`pip install coverage`.** Optional but strongly recommended. Coverage is what
-   unlocks batching and test selection, which are most of the speed. Without it angelo
+   unlocks batching and test selection, which are most of the speed. Without it Angelo
    still works, one mutant per run.
 
 ## Run it
@@ -50,7 +50,7 @@ without any test objecting. `calculator.py:31 >= -> >` says the boundary at that
 comparison is untested.
 
 **Nine mutants never ran.** No test executes those lines, so no test could possibly kill
-them. angelo marks them survived immediately rather than wasting a run.
+them. Angelo marks them survived immediately rather than wasting a run.
 
 **Seventy four mutants became seventeen runs.** That is batching.
 
@@ -87,7 +87,7 @@ change you are actually working on.
 `--sample` behaves differently from what the name might suggest, and the difference
 matters. It **deletes** the surplus mutants from the database rather than deferring them.
 What remains is a random draw from the whole codebase, so the resulting score is an
-estimate over a sample rather than a complete census. angelo says so on every sampled
+estimate over a sample rather than a complete census. Angelo says so on every sampled
 run. See [operators and sampling](06-operators-and-sampling.md).
 
 ## Configuration
@@ -106,12 +106,12 @@ sample = 0                           # 0 keeps every mutant
 timeout_factor = 2.0                 # timeout is baseline * this, plus 5s
 ```
 
-Any field you leave out takes its default, so a config written by an older angelo keeps
+Any field you leave out takes its default, so a config written by an older Angelo keeps
 working.
 
 ## When something goes wrong
 
-**"angelo needs a green baseline."** Your suite is not passing. angelo prints which kind
+**"Angelo needs a green baseline."** Your suite is not passing. Angelo prints which kind
 of failure pytest reported. Exit code 1 means real test failures. Exit code 3 usually
 means a plugin listed in `pyproject.toml` is not installed.
 

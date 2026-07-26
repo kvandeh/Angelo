@@ -2,7 +2,7 @@
 
 !!! abstract "In one sentence"
     Once only the relevant tests run, almost all remaining time is spent starting Python.
-    Unix tools avoid that with `fork()`, which Windows lacks, so angelo keeps one pytest
+    Unix tools avoid that with `fork()`, which Windows lacks, so Angelo keeps one pytest
     process alive instead. Measured at **2.5x faster**, verdicts unchanged.
 
 ## The problem
@@ -49,7 +49,7 @@ inheriting imports, and PEP 734 deliberately does not do that.
 
 This result is recorded so nobody repeats the experiment.
 
-## What angelo does instead
+## What Angelo does instead
 
 Keep the process. Reset only the part that actually changed.
 
@@ -78,7 +78,7 @@ library and site-packages stay loaded. That is the entire saving.
 A long lived process accumulating state is exactly the kind of thing that produces wrong
 verdicts, so three guards apply.
 
-**Any anomaly retires the worker.** A timeout, a crash, or a reply angelo cannot parse
+**Any anomaly retires the worker.** A timeout, a crash, or a reply Angelo cannot parse
 means the process is killed and the mutant is re-run in a fresh subprocess. Warm running
 can therefore only change the clock.
 

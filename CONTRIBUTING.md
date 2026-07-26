@@ -1,4 +1,4 @@
-# Contributing to angelo
+# Contributing to Angelo
 
 Fork the repository, make your change, and open a pull request against `main`. Run
 `cargo fmt`, `cargo clippy --all-targets` and `cargo test` before you push, because

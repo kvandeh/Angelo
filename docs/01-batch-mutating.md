@@ -1,7 +1,7 @@
 # Batch mutating
 
 !!! abstract "In one sentence"
-    angelo plants several faults at once and judges them in a single test run, grouping
+    Angelo plants several faults at once and judges them in a single test run, grouping
     only faults that no test can reach together. Measured at **4.6x faster** with an
     identical score.
 
@@ -22,7 +22,7 @@ faults into pairs, halving the number of runs. They accepted a known cost, calle
 masking**: when two faults are active in one execution, one can hide the other, and the
 verdict for at least one of them is lost.
 
-angelo takes a different route. Rather than tolerating masking, it arranges for masking to
+Angelo takes a different route. Rather than tolerating masking, it arranges for masking to
 be impossible.
 
 ## The insight
@@ -42,7 +42,7 @@ the tests are the thing being measured.
 
 ## Where the conflict data comes from
 
-One coverage run, before any mutating begins. angelo runs your suite once under
+One coverage run, before any mutating begins. Angelo runs your suite once under
 coverage.py with `dynamic_context = test_function`, which records not just which lines
 ran, but which test ran them.
 
@@ -51,7 +51,7 @@ conflict when those sets overlap.
 
 The same map pays for itself three more times over. A mutant on a line no test executes
 cannot be killed, so it is marked survived without ever running. A mutant executed only
-at import time affects every test, so it runs alone. And the map tells angelo which tests
+at import time affects every test, so it runs alone. And the map tells Angelo which tests
 to run at all, which is [test selection](02-test-selection.md).
 
 ## Judging a batch
@@ -72,7 +72,7 @@ Three cases, three rules:
    One run, many verdicts. This is where the saving comes from.
 2. **Something failed, and every failure is explainable.** Each failing test is charged to
    the single batch member that it covers. Members whose tests all passed survived.
-3. **Anything else.** A timeout, a crash, or a failure that no member explains. angelo
+3. **Anything else.** A timeout, a crash, or a failure that no member explains. Angelo
    refuses to guess. It splits the batch and runs both halves.
 
 Case three is the safety net. It means a verdict only ever comes from a run that proves
@@ -93,7 +93,7 @@ twenty one.
 ## Limits
 
 - Batching needs coverage.py and the default pytest command. Without them every batch has
-  one member, and angelo still works.
+  one member, and Angelo still works.
 - Mutants that run at import time cannot be batched, because import time code executes
   under every test.
 - Batching and [test selection](02-test-selection.md) compete for the same saving. Read

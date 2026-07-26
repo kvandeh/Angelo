@@ -34,13 +34,26 @@ fn help(args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// Long flags written as `--name` anywhere in the prose.
+/// Long flags written as `--name` anywhere in the prose. A `--` preceded by a
+/// letter is not a flag; it is something like a CSS class (`md-button--primary`)
+/// or a table rule.
 fn documented_flags(text: &str) -> BTreeSet<String> {
     let mut flags = BTreeSet::new();
-    for chunk in text.split("--").skip(1) {
-        let name: String = chunk
-            .chars()
-            .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+    let characters: Vec<char> = text.chars().collect();
+    for (at, window) in characters.windows(2).enumerate() {
+        if window != ['-', '-'] {
+            continue;
+        }
+        let preceded_by_word = at
+            .checked_sub(1)
+            .and_then(|before| characters.get(before))
+            .is_some_and(|c| c.is_alphanumeric() || *c == '-');
+        if preceded_by_word {
+            continue;
+        }
+        let name: String = characters[at + 2..]
+            .iter()
+            .take_while(|c| c.is_ascii_lowercase() || **c == '-')
             .collect();
         let name = name.trim_end_matches('-');
         if name.len() > 2 {

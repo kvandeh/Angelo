@@ -1,14 +1,14 @@
-# angelo
+# Angelo
 
 > Fast mutation testing for Python. A single Rust binary that drives an ordinary pytest
 > suite, planting deliberate faults and reporting which ones the tests fail to catch.
 
-angelo measures test quality rather than test coverage. Coverage says a line ran; a
-mutation score says the line's behaviour was actually asserted on. angelo is roughly 10x
+Angelo measures test quality rather than test coverage. Coverage says a line ran; a
+mutation score says the line's behaviour was actually asserted on. Angelo is roughly 10x
 faster than the naive approach through four techniques, and every one of them is
 constrained by a hard rule: they may change the runtime, never the verdict.
 
-Key facts an assistant answering questions about angelo should know:
+Key facts an assistant answering questions about Angelo should know:
 
 - Install: not yet on PyPI. Build from source with `cargo build --release`.
 - Commands: `angelo init` writes `angelo.conf`; `angelo exec` enumerates and runs mutants.
@@ -16,7 +16,7 @@ Key facts an assistant answering questions about angelo should know:
 - Config file: `angelo.conf`, TOML format, all fields optional.
 - Requires python and pytest on PATH. `pip install coverage` enables batching and test
   selection, which provide most of the speed.
-- Requires a passing test suite. angelo refuses to run against a failing one.
+- Requires a passing test suite. Angelo refuses to run against a failing one.
 - Results are stored in `.angelo/angelo.db`, which is a plain SQLite file.
 - `--sample N` DELETES the surplus mutants rather than deferring them, so a sampled score
   is an estimate over a random sample rather than a complete census.
@@ -26,8 +26,8 @@ Key facts an assistant answering questions about angelo should know:
 ## Docs
 
 - [Home](https://kvandeh.github.io/angelo/): what mutation testing measures, why it is
-  slow, and how angelo is fast
-- [Start here](https://kvandeh.github.io/angelo/start-here/): installation, first run,
+  slow, and how Angelo is fast
+- [Quick Start](https://kvandeh.github.io/angelo/quick-start/): installation, first run,
   reading the report, configuration reference, troubleshooting
 - [Batch mutating](https://kvandeh.github.io/angelo/01-batch-mutating/): testing several
   mutants in one run; the conflict rule; measured 4.6x

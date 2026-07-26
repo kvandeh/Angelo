@@ -1,4 +1,4 @@
-# angelo
+# Angelo
 
 Fast mutation testing for Python. One Rust binary, installed through pip.
 
@@ -13,7 +13,7 @@ Mutation testing plants small bugs (**mutants**) in your code and runs your test
 fails → the mutant is **killed**: your suite caught it. Everything passes → it
 **survived**: your suite missed a real bug. The **score** is killed / (killed + survived).
 
-It is normally slow, because one mutant means one full test run. angelo attacks that from
+It is normally slow, because one mutant means one full test run. Angelo attacks that from
 four sides:
 
 | Feature | What it skips | Measured |
@@ -27,7 +27,12 @@ four sides:
 The [operator set](docs/06-operators-and-sampling.md) matches mutmut's: **63 mutants to
 mutmut's 61** on the same file.
 
-Stacked: **48.1s → 4.5s (10.8x)** on a 200-mutant project with a 2s suite, same score.
+Stacked: **48.1s to 4.5s (10.8x)** on a 200-mutant project with a 2s suite, same score.
+
+That figure is an upper bound from a synthetic project with no timeouts. On the real click
+codebase, where roughly 7% of mutants hang until the timeout, the same techniques bought
+almost nothing, because waiting for timeouts dominates. See
+[benchmarks](docs/05-benchmarks.md).
 
 Coverage also retires mutants for free: one no test executes **survives without running**.
 
@@ -61,7 +66,7 @@ Results land in `.angelo/angelo.db`, plain SQLite format, open it with anything.
 ## Requirements
 
 python and pytest on PATH. `pip install coverage` unlocks batching and test selection;
-without it angelo still works, one mutant per run.
+without it Angelo still works, one mutant per run.
 
 ## Docs
 

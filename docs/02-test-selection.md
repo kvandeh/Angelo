@@ -1,7 +1,7 @@
 # Test selection
 
 !!! abstract "In one sentence"
-    A fault can only be caught by a test that executes it, so angelo runs those tests and
+    A fault can only be caught by a test that executes it, so Angelo runs those tests and
     no others. Measured at **2.8x faster** on its own, though it partly competes with
     batching.
 
@@ -14,7 +14,7 @@ This is not a new observation. PIT built its reputation on it, describing the di
 as minutes instead of days. Stryker calls per test coverage analysis its single largest
 speedup setting.
 
-angelo already collected the necessary data for [batching](01-batch-mutating.md) and was
+Angelo already collected the necessary data for [batching](01-batch-mutating.md) and was
 using it for one purpose only.
 
 ## The awkward part
@@ -30,7 +30,7 @@ Converting between them is not string manipulation, because a dotted name is amb
 Given `a.b.c`, the module could be `a/b/c.py`, or it could be `a/b.py` containing a class
 `c`. Nothing in the name says which.
 
-angelo resolves this by walking prefixes and taking the longest one that exists as a file
+Angelo resolves this by walking prefixes and taking the longest one that exists as a file
 on disk. The test inventory comes from the junit report of the baseline run, which lists
 every test with its class name.
 
@@ -45,7 +45,7 @@ flowchart LR
 ## Two rules that keep it honest
 
 **Anything unresolvable falls back to running everything.** If a single covering test
-cannot be named exactly, angelo runs the whole suite for that batch. Running too many
+cannot be named exactly, Angelo runs the whole suite for that batch. Running too many
 tests costs time. Running too few would invent survivors, which is the one failure this
 tool must never have.
 

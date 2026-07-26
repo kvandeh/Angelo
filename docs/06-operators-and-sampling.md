@@ -1,6 +1,6 @@
 # Operators and sampling
 
-**Abstract.** angelo's operator set was widened to match mutmut's: **63 mutants against
+**Abstract.** Angelo's operator set was widened to match mutmut's: **63 mutants against
 mutmut's 61** on the same file, up from roughly 60 percent. A bigger pool needs a way to
 bound it, so `--sample N` keeps N mutants and **deletes the rest from the database**. The
 score becomes an estimate over a random sample of the whole codebase.
@@ -39,7 +39,7 @@ Same file, both tools, arithmetic through string methods:
 
 | | mutants |
 |---|---|
-| angelo | **63** |
+| Angelo | **63** |
 | mutmut 3.6.0 | 61 |
 
 The demo project went from 11 mutants to **74 across 3 files**.
@@ -77,7 +77,7 @@ overflow leaves the database entirely, so what remains is a random sample drawn 
 file, and the score is an **estimate** over that sample rather than a complete census of
 whichever files happened to be enumerated first.
 
-angelo says so on every sampled run:
+Angelo says so on every sampled run:
 
 ```
 sampled 20 of 74 mutants, 54 dropped at random, so the score is an ESTIMATE
@@ -97,4 +97,4 @@ reproducibility over unpredictability.
   delete `.angelo/` to re-sample.
 - A small sample is a noisy estimate. The demo scored 62.2 percent on all 74 mutants and
   70.0 percent on a sample of 20. Same code, same tests, eight points apart.
-- angelo reports no confidence interval. Treat a sampled score as approximate.
+- Angelo reports no confidence interval. Treat a sampled score as approximate.

@@ -1,6 +1,6 @@
 # Support
 
-angelo is free, open source, and written by one person.
+Angelo is free, open source, and written by one person.
 
 <div class="grid cards" markdown>
 
@@ -19,7 +19,7 @@ angelo is free, open source, and written by one person.
 
 Sponsorship is not the only currency. These are genuinely useful:
 
-**Report a wrong verdict.** angelo's whole claim is that its speed features never change
+**Report a wrong verdict.** Angelo's whole claim is that its speed features never change
 a result. If you see a score drift between runs, or a survivor you believe should have
 been killed, that is the most valuable bug report you can file. Include your
 `angelo.conf` and whether `warm_workers = false` changes the outcome.
@@ -37,12 +37,9 @@ was confusing, misleading, or buried the thing you needed, that is a real defect
 Open an issue at [github.com/kvandeh/angelo/issues](https://github.com/kvandeh/angelo/issues).
 
 For a bug, the useful details are your `angelo.conf`, your Python and pytest versions,
-your operating system, and the last twenty lines angelo printed.
+your operating system, and the last twenty lines Angelo printed.
 
 ## Who made this
 
-angelo is written and owned by **Kieran van der Heijde**.
-
-[LinkedIn](https://www.linkedin.com/in/kcvdh) &middot;
-[GitHub](https://github.com/kvandeh) &middot;
-[Sponsor](https://github.com/sponsors/kvandeh)
+Angelo is written and owned by **Kieran van der Heijde**. The links in the footer reach
+LinkedIn, the repository and sponsorship.

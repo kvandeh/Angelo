@@ -1,13 +1,18 @@
-# angelo
+# Angelo
 
 > Python mutation testing is slow and expensive, but what if it wasn't?
 
-angelo measures how good your tests actually are. It breaks your code on purpose, one
+Angelo measures how good your tests actually are. It breaks your code on purpose, one
 small change at a time, and checks whether your test suite notices. It is a single Rust
 binary that drives your ordinary pytest suite.
 
-On a project with 200 planted faults and a two second suite, angelo takes **4.5 seconds**
+On a project with 200 planted faults and a two second suite, Angelo takes **4.5 seconds**
 where the standard approach takes **48 seconds**. The score is identical.
+
+[Run your first mutation test](quick-start.md){ .md-button .md-button--primary }
+[See the evidence](05-benchmarks.md){ .md-button }
+
+Two commands and an existing pytest suite. Nothing to configure to get started.
 
 ## What mutation testing measures
 
@@ -34,7 +39,7 @@ def is_adult(age):
 ```
 
 Change `>=` to `>` and the function now rejects eighteen year olds. If your tests still
-pass, you never tested the boundary. angelo tells you that.
+pass, you never tested the boundary. Angelo tells you that.
 
 ## Why it is normally slow
 
@@ -49,9 +54,9 @@ selected single test:
 | Collect and configure | 139 ms |
 | Run the actual test | 15 ms |
 
-Roughly 95 percent of the work is setup. That is the problem angelo attacks.
+Roughly 95 percent of the work is setup. That is the problem Angelo attacks.
 
-## How angelo is fast
+## How Angelo is fast
 
 Four techniques, each measured, each documented in its own note.
 
@@ -61,6 +66,13 @@ Four techniques, each measured, each documented in its own note.
 | [Test selection](02-test-selection.md) | Run only the tests that touch the mutant | 2.8x |
 | [Warm workers](03-warm-workers.md) | Keep one pytest process alive | 2.5x |
 | [Diff mode](06-operators-and-sampling.md) | Only mutate lines you changed | varies |
+
+!!! warning "Those figures are an upper bound"
+    They come from a synthetic project with independent functions and no timeouts, which
+    is the best case for all three. Measured against the real click codebase, where about
+    seven percent of mutants hang until the timeout, the same techniques bought
+    [almost nothing](05-benchmarks.md#a-real-codebase-where-the-numbers-do-not-hold).
+    Waiting for timeouts dominates whatever they save.
 
 ### Batching in one picture
 
@@ -75,7 +87,7 @@ flowchart LR
     M3[mutant 3] --> R3[full test run]
 ```
 
-angelo puts several mutants into the same run:
+Angelo puts several mutants into the same run:
 
 ```mermaid
 flowchart LR
@@ -85,7 +97,7 @@ flowchart LR
     R --> V[three verdicts]
 ```
 
-The catch is obvious. If the run fails, which mutant caused it? angelo solves this by
+The catch is obvious. If the run fails, which mutant caused it? Angelo solves this by
 only grouping mutants that **no single test can reach at the same time**. It learns which
 test touches which line from one coverage run, before any mutating starts. Two mutants
 that share a test are kept apart. A failing test therefore points at exactly one mutant.
@@ -105,8 +117,16 @@ as a bug.
 
 ## Where to go next
 
-- **New here?** [Start here](start-here.md) installs angelo and reads your first report.
+- **New here?** [Quick Start](quick-start.md) installs Angelo and reads your first report.
 - **Want the evidence?** [Benchmarks](05-benchmarks.md) has every measurement, including
   the ones that did not work out.
 - **Curious how it is built?** [Architecture](04-architecture.md).
-- **Want to help?** [Support](support.md), or read [CONTRIBUTING.md](https://github.com/kvandeh/angelo/blob/main/CONTRIBUTING.md) in the repository.
+- **Want to help?** [Support](support.md), or read
+  [CONTRIBUTING.md](https://github.com/kvandeh/angelo/blob/main/CONTRIBUTING.md) in the
+  repository.
+
+---
+
+Point Angelo at a project you already have and see what your tests are missing.
+
+[Get started](quick-start.md){ .md-button .md-button--primary }
