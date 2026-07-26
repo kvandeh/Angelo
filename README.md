@@ -1,78 +1,160 @@
-# Angelo
+<h1 align="center">Angelo</h1>
 
-Fast mutation testing for Python. One Rust binary, installed through pip.
+<p align="center">
+  <em>Python mutation testing is slow and expensive, but what if it wasn't?</em>
+</p>
 
-```
-angelo init
-angelo exec
-```
+<p align="center">
+  <a href="https://github.com/kvandeh/angelo/releases">
+    <img alt="Release" src="https://img.shields.io/github/v/release/kvandeh/angelo?display_name=tag&sort=semver&color=orange">
+  </a>
+  <a href="https://angelo.kcvdh.com/">
+    <img alt="Documentation" src="https://img.shields.io/badge/docs-angelo.kcvdh.com-blue">
+  </a>
+  <a href="https://github.com/sponsors/kvandeh">
+    <img alt="Sponsor" src="https://img.shields.io/badge/sponsor-%E2%9D%A4-db61a2">
+  </a>
+</p>
 
-## What it does
+<p align="center">
+  <b><a href="https://angelo.kcvdh.com/quick-start/">Quick Start</a></b> ·
+  <a href="https://angelo.kcvdh.com/">Documentation</a> ·
+  <a href="https://angelo.kcvdh.com/05-benchmarks/">Benchmarks</a>
+</p>
 
-Mutation testing plants small bugs (**mutants**) in your code and runs your tests. A test
-fails → the mutant is **killed**: your suite caught it. Everything passes → it
-**survived**: your suite missed a real bug. The **score** is killed / (killed + survived).
+---
 
-It is normally slow, because one mutant means one full test run. Angelo attacks that from
-four sides:
+Angelo measures how good your tests actually are. It breaks your code on purpose, one
+small change at a time, and reports which changes your test suite failed to notice. It is
+a single Rust binary that drives your ordinary pytest suite.
 
-| Feature | What it skips | Measured |
-|---|---|---|
-| [Batch mutating](docs/01-batch-mutating.md) | Runs, several mutants per run | 4.6x |
-| [Test selection](docs/02-test-selection.md) | Tests, only those that cover the mutant | 2.8x |
-| [Warm workers](docs/03-warm-workers.md) | Python startup, one live pytest process | 2.5x |
-| `--diff` | Mutants, only lines you changed | scope-dependent |
-| [`--sample N`](docs/06-operators-and-sampling.md) | Mutants, a random N of them | scope-dependent |
+## The problem it solves
 
-The [operator set](docs/06-operators-and-sampling.md) matches mutmut's: **63 mutants to
-mutmut's 61** on the same file.
+Coverage tells you a line ran. It does not tell you whether anything checked the result.
 
-Stacked: **48.1s to 4.5s (10.8x)** on a 200-mutant project with a 2s suite, same score.
-
-That figure is an upper bound from a synthetic project with no timeouts. On the real click
-codebase, where roughly 7% of mutants hang until the timeout, the same techniques bought
-almost nothing, because waiting for timeouts dominates. See
-[benchmarks](docs/05-benchmarks.md).
-
-Coverage also retires mutants for free: one no test executes **survives without running**.
-
-## The rule
-
-Every one of those is a **speed feature only**. Batching, selection and warm workers must
-never change a verdict, `scripts/verdict-matrix.sh` runs 8 configurations in CI and fails
-the build if any disagrees.
-
-## Usage
-
-```
-angelo init                 # detect the project, write angelo.conf
-angelo exec                 # resumable; delete .angelo/ for a fresh run
-angelo exec --workers 8
-angelo exec --init-only     # enumerate only, inspect before running
-angelo exec --diff          # only lines changed since HEAD
-angelo exec --diff main     # only lines changed since another revision
-angelo exec --sample 500    # keep 500 mutants, drop the rest at random
+```python
+def is_adult(age):
+    return age >= 18
 ```
 
-`angelo.conf` (TOML): `paths`, `test_command`, `workers`, `batch_size`, `test_selection`,
-`warm_workers`, `warm_recycle_after`, `sample`, `timeout_factor`.
+Change `>=` to `>` and the function now rejects eighteen year olds. If your tests still
+pass, the boundary was never tested, even at 100% coverage. Angelo finds that line and
+tells you about it.
 
-**`--sample` deletes rows**, it does not defer them: the surviving mutants are a random
-sample of the whole codebase, and the score is an estimate over that sample. See
-[note 06](docs/06-operators-and-sampling.md).
+Each deliberate change is a **mutant**. A mutant is **killed** when a test fails, and it
+**survived** when every test passed. Survivors are the output worth reading: each one is a
+bug you could ship without a single test objecting.
 
-Results land in `.angelo/angelo.db`, plain SQLite format, open it with anything.
+## Quick start
+
+```bash
+cd your-project
+angelo init      # detect the layout, write angelo.conf
+angelo exec      # enumerate mutants, then run them
+```
+
+```
+enumerated 74 mutants across 3 files
+9 mutants sit on lines no test executes, survived without a single run
+running 17 batches on 8 workers, covering tests only
+
+   killed: 46
+ survived: 28
+    score: 62.2% (46/74 detected)
+
+survivors (changes your tests never noticed):
+  calculator.py:31 >= -> >
+  calculator.py:35 and -> or
+  text.py:22 lower -> upper
+```
+
+`exec` is resumable. Interrupt it and run it again to pick up where it stopped, or delete
+`.angelo/` to start fresh. Results live in `.angelo/angelo.db`, a plain SQLite file you can
+open with anything.
+
+## Why it is fast
+
+Most of a mutation run is not testing. On one selected test, roughly 95% of the 327 ms
+goes to starting Python and importing pytest. Angelo attacks that from four directions:
+
+| Technique | What it skips |
+| --- | --- |
+| [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | Runs. Several mutants share one test run. |
+| [Test selection](https://angelo.kcvdh.com/02-test-selection/) | Tests. Only the ones that reach the mutant. |
+| [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | Startup. One pytest process stays alive. |
+| `--diff` and `--sample` | Mutants. Only changed lines, or a random sample. |
+
+On a synthetic 200 mutant project with a two second suite, these take **48.1s down to
+4.5s** with an identical score.
+
+> [!WARNING]
+> That figure is an upper bound. It comes from a project with independent functions and no
+> timeouts, which is the best case for all three techniques. Measured against the real
+> [click](https://github.com/pallets/click) codebase, where about 7% of mutants hang until
+> the timeout, the same techniques bought almost nothing, because waiting for timeouts
+> dominates. The [benchmarks](https://angelo.kcvdh.com/05-benchmarks/) page reports
+> both results.
+
+## The rule everything obeys
+
+Batching, test selection and warm workers are **speed features only**. None may change a
+verdict.
+
+This is enforced rather than promised. [`scripts/verdict-matrix.sh`](scripts/verdict-matrix.sh)
+runs eight configurations against the same project and fails the build if any of them
+disagrees about the score. It runs in CI on every push. A speedup that changes a result is
+treated as a bug.
 
 ## Requirements
 
-python and pytest on PATH. `pip install coverage` unlocks batching and test selection;
-without it Angelo still works, one mutant per run.
+- **python and pytest** on your PATH.
+- **A passing test suite.** Angelo refuses to run against a red one, because a failing test
+  cannot tell you anything about a planted fault.
+- **`pip install coverage`**, strongly recommended. Coverage unlocks batching and test
+  selection, which provide most of the speed. Without it Angelo still works, one mutant per
+  run.
 
-## Docs
+Runs natively on Windows, Linux and macOS. Unlike mutmut, it does not need `fork()`.
 
-[docs/](docs/), one short note per idea, each written as abstract → background → method →
-result → limits.
+## Building
+
+Not yet published to PyPI. For now:
+
+```bash
+git clone https://github.com/kvandeh/angelo.git
+cd angelo
+cargo build --release   # target/release/angelo
+```
+
+## Documentation
+
+Full documentation at **[angelo.kcvdh.com](https://angelo.kcvdh.com/)**.
+Each page is written as a short paper: abstract, background, method, result, limits.
+
+| Page | Covers |
+| --- | --- |
+| [Quick Start](https://angelo.kcvdh.com/quick-start/) | First run, reading the report, configuration, troubleshooting |
+| [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | The conflict rule and why it is sound |
+| [Test selection](https://angelo.kcvdh.com/02-test-selection/) | Coverage into pytest node ids |
+| [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | The `fork()` substitute, and why subinterpreters are not one |
+| [Architecture](https://angelo.kcvdh.com/04-architecture/) | Module map and design rules |
+| [Benchmarks](https://angelo.kcvdh.com/05-benchmarks/) | Every measurement, including the disappointing ones |
+| [Operators and sampling](https://angelo.kcvdh.com/06-operators-and-sampling/) | What gets mutated, and how to cap the pool |
 
 ## Status
 
-In development. Not on PyPI yet.
+In development. The core works and is tested, but expect rough edges and no stability
+guarantee yet.
+
+## Contributing and support
+
+Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) is one paragraph.
+
+If Angelo is useful to you, [sponsorship](https://github.com/sponsors/kvandeh) pays for the
+time it takes. Reporting a wrong verdict is worth just as much: see
+[Support](https://angelo.kcvdh.com/support/).
+
+## Author
+
+Written and owned by **Kieran van der Heijde**.
+[LinkedIn](https://www.linkedin.com/in/kcvdh) · [GitHub](https://github.com/kvandeh)
