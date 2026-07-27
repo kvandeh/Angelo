@@ -35,6 +35,10 @@ enum Command {
         /// Mutate only lines changed since this git revision (default: HEAD)
         #[arg(long, num_args = 0..=1, default_missing_value = "HEAD")]
         diff: Option<String>,
+        /// Mutate only the lines this branch adds on top of this revision,
+        /// which is what a pull request changes (default: the base branch)
+        #[arg(long, value_name = "REV", num_args = 0..=1, conflicts_with = "diff")]
+        diff_base: Option<Option<String>>,
         /// Keep at most N mutants, dropping the rest at random. The score
         /// becomes an estimate over that sample.
         #[arg(long, value_name = "N")]
@@ -49,11 +53,12 @@ fn main() -> Result<()> {
             workers,
             init_only,
             diff,
+            diff_base,
             sample,
         } => exec::run(exec::Options {
             workers,
             init_only,
-            diff,
+            scope: diff::Scope::from_flags(diff, diff_base),
             sample,
         }),
     }

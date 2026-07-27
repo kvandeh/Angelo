@@ -52,6 +52,12 @@ impl Project {
         self
     }
 
+    /// Rewrite a file and commit it, one step of a branch's history.
+    fn commit(&self, name: &str, contents: &str) -> &Project {
+        fs::write(self.root.join(name), contents).expect("writing a test file");
+        self.git(&["commit", "-aqm", &format!("edit {name}")])
+    }
+
     /// A repo with everything committed, so `--diff HEAD` starts from clean.
     fn committed(self) -> Project {
         self.git(&["init", "-q"])
@@ -248,6 +254,82 @@ fn diff_mode_mutates_only_the_changed_line() {
     assert!(stdout.contains("> -> >="), "{stdout}");
     assert!(!stdout.contains("+ -> -"), "{stdout}");
     assert!(stdout.contains("survived: 2"), "{stdout}");
+}
+
+/// A pull request is many commits, so the unit that matters is the branch
+/// against its merge base. A line added in the first commit and deleted in the
+/// third has to count for nothing.
+#[test]
+fn diff_base_mutates_what_the_branch_net_added() {
+    let project = calculator_project("diff-base").committed();
+    project.git(&["branch", "base"]);
+    project.git(&["checkout", "-b", "feature"]);
+
+    let raised = CALCULATOR.replace("return n > 10", "return n > 12");
+    let with_triple = format!("{raised}\n\ndef triple(x):\n    return x * 3\n");
+    project.commit(
+        "calculator.py",
+        &format!("{CALCULATOR}\n\ndef triple(x):\n    return x * 3\n"),
+    );
+    project.commit("calculator.py", &with_triple);
+    project.commit("calculator.py", &raised);
+
+    let stdout = project
+        .angelo(&["exec", "--diff-base", "base"])
+        .expect_success();
+    assert!(stdout.contains("diff vs base...HEAD"), "{stdout}");
+    // Only is_big's line survives the round trip: triple came and went, and
+    // add was never touched.
+    assert!(
+        stdout.contains("2 of 5 mutants sit on changed lines"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("> -> >="), "{stdout}");
+    assert!(!stdout.contains("+ -> -"), "{stdout}");
+    assert!(stdout.contains("survived: 2"), "{stdout}");
+}
+
+/// The bug that `--diff-base` exists to fix: a two-dot diff sees the base
+/// branch's own new commits, backwards, and mutates lines the author never
+/// wrote.
+#[test]
+fn diff_base_ignores_what_the_base_gained() {
+    let project = calculator_project("diff-base-moved").committed();
+    project.git(&["branch", "base"]);
+    project.git(&["checkout", "-b", "feature"]);
+    project.commit(
+        "calculator.py",
+        &CALCULATOR.replace("return n > 10", "return n > 12"),
+    );
+
+    project.git(&["checkout", "base"]);
+    project.commit(
+        "calculator.py",
+        &CALCULATOR.replace("return x * 2", "return x * 4"),
+    );
+    project.git(&["checkout", "feature"]);
+
+    let stdout = project
+        .angelo(&["exec", "--init-only", "--diff-base", "base"])
+        .expect_success();
+    // Two dots would find four: unused's line differs from base too.
+    assert!(
+        stdout.contains("2 of 5 mutants sit on changed lines"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("2 mutants pending"), "{stdout}");
+}
+
+/// Silently preferring one flag over the other is a way to score the wrong
+/// lines, so clap refuses the pair outright.
+#[test]
+fn diff_and_diff_base_cannot_both_be_given() {
+    let project = calculator_project("diff-both").committed();
+    let stderr = project
+        .angelo(&["exec", "--diff", "HEAD", "--diff-base", "base"])
+        .expect_failure();
+
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
 }
 
 /// Sampling drops mutants from the pool, it does not merely defer them: the
