@@ -20,7 +20,7 @@ same thing.
 * SQL, templates and tables live in files, not in string literals; see [Keep data in data files](#keep-data-in-data-files).
 * Comment the weird, not the obvious; see [Comment the weird, not the obvious](#comment-the-weird-not-the-obvious).
 * Pure logic gets a unit test in the same file; see [Test the arithmetic, not just the workflow](#test-the-arithmetic-not-just-the-workflow).
-* A run where every mutant dies instantly is a broken test command; see [Never trust a fast run](#never-trust-a-fast-run).
+* A run where every mutant dies instantly is a broken test command, and no score is not a pass; see [Never trust a fast run](#never-trust-a-fast-run).
 * Bytecode caching silently fakes survivors; see [Never let Python reuse bytecode](#never-let-python-reuse-bytecode).
 * Windows has no `fork()` and is the first-class platform; see [Windows first](#windows-first).
 * Do not purge `__main__`, and do not revisit subinterpreters; see [Two traps that already cost a day](#two-traps-that-already-cost-a-day).
@@ -205,6 +205,10 @@ excellent suite. Check the `error` count before believing any score. This was le
 during the cosmic-ray study and it is the reason the summary prints a warning about error
 counts at all.
 
+The same lesson decides what `--fail-under` does with a run it could not score: it fails
+it. A tool that could not measure must never report success, and an all-`error` run is
+exactly what a broken test command produces.
+
 Related: pytest exit codes are 0 passed, 1 failures, 2 to 4 usage or internal error, 5
 nothing collected. `pytest::diagnose_baseline` turns each into a sentence, because a
 collection error buries its real cause under hundreds of tracebacks — only the last 40
@@ -252,8 +256,10 @@ extension. `Config` is `#[serde(default)]`, so a file written by an older build 
 loads and new fields take their defaults — add fields freely.
 
 **CLI.** `init` writes `angelo.conf`. `exec` enumerates mutants into the database and then
-runs them (`--workers N`, `--init-only`, `--diff`, `--diff-base`, `--sample`). Re-running
-`exec` resumes `pending` rows; a fresh run means deleting `.angelo/`.
+runs them (`--workers N`, `--init-only`, `--diff`, `--diff-base`, `--sample`,
+`--fail-under`). Re-running `exec` resumes `pending` rows; a fresh run means deleting
+`.angelo/`. `main` returns `ExitCode` rather than `()`, because the threshold needs an exit
+code that is not an error.
 
 **Database.** turso 0.7. Its API is async, so it is quarantined inside `src/db.rs` behind a
 current-thread tokio runtime and `block_on`; everything else in the codebase is sync.
@@ -319,6 +325,18 @@ and an mpsc channel; the main thread owns every database write.
 **Statuses.** `killed` (exit 1), `survived` (exit 0), `timeout`, `error` (any other exit,
 including 5, nothing collected). Score is `(killed + timeout) / (killed + timeout +
 survived)`.
+
+**Thresholds.** `--fail-under PERCENT`, or `fail_under` in config, with the flag winning. 0
+is off and is the default. `Summary::gate` owns the decision and returns a `Gate`, so the
+arithmetic is unit-tested rather than inferred from an exit code. A threshold has to be
+**earned**: an all-`error` run has no score and fails it, and a run with `pending` rows
+fails it too, because a partial score is not a score. A **zero-mutant pool passes** and
+prints nothing — a docs-only `--diff-base` branch lands there, and there is no measurement
+to judge. The comparison is `detected * 100 >= threshold * scored`, the raw ratio rather
+than the rounded percentage, so 4 of 5 clears `--fail-under 80` instead of tripping over
+how it prints. Both a threshold failure and a red baseline exit 1, and they stay
+distinguishable: the threshold prints its one line on stdout with the report, while the red
+baseline comes out of `anyhow` on stderr.
 
 **Sampling.** `--sample N`, or `sample` in config. It **deletes the overflow rows**,
 because the sample *is* the study: the score is an estimate over a random draw from the

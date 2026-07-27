@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 
@@ -22,10 +23,13 @@ pub struct Options {
     pub scope: Option<Scope>,
     /// Cap the mutant pool, dropping the overflow at random.
     pub sample: Option<usize>,
+    /// Fail the run when the score lands under this percentage.
+    pub fail_under: Option<f64>,
 }
 
-pub fn run(options: Options) -> Result<()> {
+pub fn run(options: Options) -> Result<ExitCode> {
     let config = config::load_or_init()?;
+    let fail_under = options.fail_under.unwrap_or(config.fail_under);
     let angelo_dir = Path::new(ANGELO_DIR);
     let database = Database::open(angelo_dir)?;
 
@@ -44,11 +48,11 @@ pub fn run(options: Options) -> Result<()> {
             "{} mutants pending, stopping here (--init-only)",
             pending.len()
         );
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
     if pending.is_empty() {
         println!("nothing pending");
-        return summarise(&database);
+        return summarise(&database, fail_under);
     }
 
     let test_command = config.test_command_parts()?;
@@ -75,7 +79,7 @@ pub fn run(options: Options) -> Result<()> {
         );
     }
     if testable.is_empty() {
-        return summarise(&database);
+        return summarise(&database, fail_under);
     }
 
     let mut progress = Progress::new(&testable);
@@ -107,7 +111,7 @@ pub fn run(options: Options) -> Result<()> {
         database.record_batch(&outcome)
     })?;
 
-    summarise(&database)
+    summarise(&database, fail_under)
 }
 
 fn enumerate(database: &Database, config: &Config, scope: Option<&Scope>) -> Result<()> {
@@ -184,14 +188,22 @@ fn split_untested(pending: Vec<Mutant>, coverage: Option<&Coverage>) -> (Vec<Mut
         .partition(|mutant| !matches!(coverage.classify(mutant), TestCoverage::Untested))
 }
 
-fn summarise(database: &Database) -> Result<()> {
+/// Print the report, then hand CI an exit code. A threshold failure is a
+/// verdict rather than a crash, so it says its piece on stdout with the rest of
+/// the report; a red baseline still comes out of `anyhow` on stderr.
+fn summarise(database: &Database, fail_under: f64) -> Result<ExitCode> {
     let counts = database.status_counts()?;
     if counts.is_empty() {
         // An empty pool is not a pass. A docs-only branch scoped by --diff-base
-        // lands here, and a score over nothing would read as one.
+        // lands here, and a score over nothing would read as one. There is
+        // nothing for a threshold to judge either, so it is not a failure.
         println!("no mutants in scope: nothing was measured, so there is no score");
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
-    report::print_summary(&counts, &database.survivors()?);
-    Ok(())
+    let summary = report::print_summary(&counts, &database.survivors()?);
+    let Some(failure) = summary.gate(fail_under).failure() else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    println!("{failure}");
+    Ok(ExitCode::FAILURE)
 }
