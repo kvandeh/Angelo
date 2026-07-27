@@ -353,7 +353,7 @@ fn splice_all(source: &str, mutants: &[&Mutant], file: &Path) -> Result<String> 
 
     let mut mutated = source.to_string();
     for mutant in ordered {
-        mutated = mutant.apply(&mutated);
+        mutant.splice_into(&mut mutated);
     }
     Ok(mutated)
 }
@@ -434,6 +434,18 @@ mod tests {
         let stale = mutant(6, "+", "-");
         let error = splice_all("x = 1 - 2\n", &[&stale], Path::new("calc.py"));
         assert!(error.is_err());
+    }
+
+    /// Splicing writes into the string in place, and a byte range that is not a
+    /// character boundary panics. The original-bytes check in front of the
+    /// splice is what proves the range is one, so a file full of multi-byte
+    /// characters has to come out intact.
+    #[test]
+    fn splices_around_multibyte_characters() {
+        let source = "s = 'héllo wörld'\nx = 1 + 2\n";
+        let plus = mutant(source.find('+').unwrap(), "+", "-");
+        let mutated = splice_all(source, &[&plus], Path::new("calc.py")).unwrap();
+        assert_eq!(mutated, "s = 'héllo wörld'\nx = 1 - 2\n");
     }
 
     #[test]

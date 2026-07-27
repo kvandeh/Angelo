@@ -33,21 +33,41 @@ pub enum TestCoverage {
     Untested,
 }
 
+/// Everything one unmutated run tells us: what a normal run costs, which tests
+/// cover which lines, and which tests were red before a mutant existed.
+pub struct Baseline {
+    pub duration: Duration,
+    pub coverage: Option<Coverage>,
+    /// Node ids that failed with nothing mutated. A run that executes one of
+    /// these cannot tell a real kill from the failure that was already there.
+    pub already_failing: HashSet<String>,
+}
+
+impl Baseline {
+    pub fn is_green(&self) -> bool {
+        self.already_failing.is_empty()
+    }
+}
+
 /// Run the baseline suite. With coverage.py available and the default pytest
 /// command, the same single run also yields the per-test coverage map.
 pub fn baseline(
     project_root: &Path,
     test_command: &[String],
     angelo_dir: &Path,
-) -> Result<(Duration, Option<Coverage>)> {
+) -> Result<Baseline> {
     let junit = pytest::baseline_junit_path(angelo_dir);
     let rcfile = angelo_dir.join("coveragerc");
     let data_file = angelo_dir.join("coverage.db");
 
     let wrapped = coverage_command(test_command, &rcfile);
     let Some(wrapped) = wrapped.filter(|_| coverage_is_installed()) else {
-        let (duration, _) = pytest::run_baseline(project_root, test_command, &junit)?;
-        return Ok((duration, None));
+        let (duration, testcases) = pytest::run_baseline(project_root, test_command, &junit)?;
+        return Ok(Baseline {
+            duration,
+            coverage: None,
+            already_failing: failing_node_ids(&testcases, project_root),
+        });
     };
 
     fs::write(
@@ -63,7 +83,25 @@ pub fn baseline(
     let rows = db::read_coverage_rows(&data_file)?;
     let mut coverage = Coverage::build(rows);
     coverage.resolve_node_ids(&testcases, project_root);
-    Ok((duration, Some(coverage)))
+    Ok(Baseline {
+        duration,
+        coverage: Some(coverage),
+        already_failing: failing_node_ids(&testcases, project_root),
+    })
+}
+
+/// The already-red tests, named the way a selection names them. A case whose
+/// node id will not resolve keeps its junit name rather than vanishing: it can
+/// never match a selection, but it still has to make the baseline count as red.
+fn failing_node_ids(testcases: &[TestCase], root: &Path) -> HashSet<String> {
+    testcases
+        .iter()
+        .filter(|test| test.failed)
+        .map(|test| {
+            test.node_id(root)
+                .unwrap_or_else(|| format!("{}::{}", test.classname, test.name))
+        })
+        .collect()
 }
 
 impl Coverage {
@@ -76,26 +114,22 @@ impl Coverage {
             durations: HashMap::new(),
         };
         for row in rows {
-            for line in lines_in(&row.numbits) {
-                if row.context.is_empty() {
-                    coverage
-                        .import_lines
-                        .entry(row.file.clone())
-                        .or_default()
-                        .insert(line);
-                    continue;
-                }
+            let executed = lines_in(&row.numbits);
+            // Import time is a property of the row, not of each of its lines,
+            // so the file is looked up once per row rather than once per line.
+            if row.context.is_empty() {
                 coverage
-                    .lines
-                    .entry(row.file.clone())
+                    .import_lines
+                    .entry(row.file)
                     .or_default()
-                    .entry(line)
-                    .or_default()
-                    .insert(row.context_id);
+                    .extend(executed);
+                continue;
             }
-            if !row.context.is_empty() {
-                coverage.tests.insert(row.context.clone(), row.context_id);
+            let lines = coverage.lines.entry(row.file).or_default();
+            for line in executed {
+                lines.entry(line).or_default().insert(row.context_id);
             }
+            coverage.tests.insert(row.context, row.context_id);
         }
         coverage
     }
@@ -118,18 +152,21 @@ impl Coverage {
         }
     }
 
+    /// The contexts that executed a mutant's line, borrowed. `classify` answers
+    /// the same question with an owned set, which only the batch composer needs.
+    fn covering(&self, mutant: &Mutant) -> Option<&HashSet<i64>> {
+        self.lines
+            .get(&mutant.coverage_file())
+            .and_then(|lines| lines.get(&mutant.line))
+    }
+
     pub fn classify(&self, mutant: &Mutant) -> TestCoverage {
-        let file = mutant.coverage_file();
-        let covering = self
-            .lines
-            .get(&file)
-            .and_then(|lines| lines.get(&mutant.line));
-        if let Some(tests) = covering {
+        if let Some(tests) = self.covering(mutant) {
             return TestCoverage::Tested(tests.clone());
         }
         let ran_at_import = self
             .import_lines
-            .get(&file)
+            .get(&mutant.coverage_file())
             .is_some_and(|lines| lines.contains(&mutant.line));
         if ran_at_import {
             return TestCoverage::ImportOnly;
@@ -144,7 +181,7 @@ impl Coverage {
     pub fn select(&self, mutants: &[&Mutant]) -> Selection {
         let mut contexts = HashSet::new();
         for mutant in mutants {
-            let TestCoverage::Tested(covering) = self.classify(mutant) else {
+            let Some(covering) = self.covering(mutant) else {
                 return Selection::whole_suite();
             };
             contexts.extend(covering);
@@ -174,6 +211,23 @@ impl Coverage {
         }
     }
 
+    /// Whether a run judging this mutant can name its own tests and avoid every
+    /// one that was already red.
+    ///
+    /// A run that cannot is not a fair trial. pytest exits 1 because of the
+    /// failure that was already there, the mutant is scored `killed`, and
+    /// nothing detected anything. A whole-suite fallback — no resolvable node
+    /// id, or an import-time mutant — can never avoid them, so it fails here
+    /// too.
+    pub fn gets_a_fair_trial(&self, mutant: &Mutant, already_failing: &HashSet<String>) -> bool {
+        let selection = self.select(&[mutant]);
+        !selection.test_ids.is_empty()
+            && !selection
+                .test_ids
+                .iter()
+                .any(|test_id| already_failing.contains(test_id))
+    }
+
     /// Map a red batch run to per-mutant verdicts: a failed test kills the
     /// batch member it covers. None = a failure nobody explains, caller must
     /// split the batch instead.
@@ -184,14 +238,14 @@ impl Coverage {
     ) -> Option<Vec<(i64, Status)>> {
         let mut verdicts: Vec<(i64, Status)> =
             mutants.iter().map(|m| (m.id, Status::Survived)).collect();
+        // Looked up once per member, not once per member per failed test.
+        let covering: Vec<Option<&HashSet<i64>>> =
+            mutants.iter().map(|mutant| self.covering(mutant)).collect();
         for name in failed_tests {
             let context_id = self.tests.get(&normalize(name))?;
             let mut explained = false;
-            for (index, mutant) in mutants.iter().enumerate() {
-                let TestCoverage::Tested(covering) = self.classify(mutant) else {
-                    continue;
-                };
-                if covering.contains(context_id) {
+            for (index, covering) in covering.iter().enumerate() {
+                if covering.is_some_and(|tests| tests.contains(context_id)) {
                     verdicts[index].1 = Status::Killed;
                     explained = true;
                 }
@@ -427,6 +481,41 @@ mod tests {
         coverage.resolve_node_ids(&cases, root);
         assert_eq!(coverage.node_ids[&7], "src/runner/worker.py::test_x");
         assert_eq!(coverage.durations[&7], Duration::from_millis(240));
+    }
+
+    fn failing(node_ids: &[&str]) -> HashSet<String> {
+        node_ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    /// The point of not stopping on a red baseline: the mutants the red tests
+    /// never touch are still worth measuring.
+    #[test]
+    fn a_mutant_the_red_tests_do_not_cover_still_gets_a_trial() {
+        let coverage = with_node_ids(coverage());
+        let already_red = failing(&["test_calc.py::test_add"]);
+
+        // Line 4 is covered by test_both alone, which is green.
+        let clean = mutant(1, "calc.py", 4);
+        assert!(coverage.gets_a_fair_trial(&clean, &already_red));
+
+        // Line 2 is covered by test_add, which was already failing: a run would
+        // exit 1 regardless of the mutant and score it killed.
+        let contaminated = mutant(2, "calc.py", 2);
+        assert!(!coverage.gets_a_fair_trial(&contaminated, &already_red));
+    }
+
+    /// A run that cannot name its tests runs all of them, and all of them
+    /// includes the red ones.
+    #[test]
+    fn a_whole_suite_fallback_never_gets_a_fair_trial() {
+        let coverage = with_node_ids(coverage());
+        let already_red = failing(&["test_calc.py::test_add"]);
+        let import_time = mutant(1, "calc.py", 6);
+        assert!(!coverage.gets_a_fair_trial(&import_time, &already_red));
+
+        // Nothing red at all still leaves the whole suite uncostable, but that
+        // is the caller's green path, where the question is never asked.
+        assert!(!coverage.gets_a_fair_trial(&import_time, &HashSet::new()));
     }
 
     #[test]
