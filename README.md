@@ -116,9 +116,17 @@ treated as a bug.
 
 Runs natively on Windows, Linux and macOS. Unlike mutmut, it does not need `fork()`.
 
-## Building
+## Installing
 
-Not yet published to PyPI. For now:
+Not on PyPI proper yet. Releases go to **TestPyPI** while the pipeline is being proven:
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ angelo
+```
+
+The wheel carries the compiled binary rather than any Python, so `pip` puts `angelo` on
+your PATH and nothing gets imported. Wheels are built for Windows x86-64, Linux x86-64 and
+Apple Silicon; anything else builds from source:
 
 ```bash
 git clone https://github.com/kvandeh/angelo.git
