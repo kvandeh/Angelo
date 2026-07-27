@@ -7,3 +7,4 @@ extra/
 site/
 .zensical/
 .cache
+.claude
