@@ -1,0 +1,64 @@
+name: TestPyPI
+
+# Trusted publishing, so no token exists anywhere. GitHub mints a short-lived
+# OIDC identity and TestPyPI checks it against the publisher registered for
+# this repository, this file name and this environment. All three are part of
+# the match: rename the file and the upload stops until the publisher on
+# TestPyPI is renamed with it.
+#
+# Manual on purpose. release.yml cuts its GitHub Release with the default
+# GITHUB_TOKEN, and an event raised by that token never starts another
+# workflow, so `on: release` here would sit silent while looking wired up.
+# Automating the handoff belongs with the move to real PyPI.
+on:
+  workflow_dispatch:
+
+jobs:
+  wheels:
+    name: wheel on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide whether the others built.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+          # Builds inside a manylinux container, so the wheel does not demand
+          # whatever glibc the runner happened to ship. Ignored elsewhere.
+          manylinux: auto
+          sccache: true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.os }}
+          path: dist/*.whl
+
+  publish:
+    needs: wheels
+    runs-on: ubuntu-latest
+    # A dedicated environment, so publishing rights are not handed out with
+    # commit access. It must exist under Settings -> Environments and be named
+    # in the TestPyPI publisher.
+    environment: testpypi
+    permissions:
+      # Mints the OIDC token. Without it there is no identity to check.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@v1.14.1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # No skip-existing. TestPyPI refuses a version it already holds, and
+          # that refusal is the useful answer: publishing again means bumping
+          # Cargo.toml, not uploading nothing and reporting success.

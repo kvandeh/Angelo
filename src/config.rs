@@ -44,6 +44,12 @@ pub struct Config {
     /// generated code, vendored code, one module that hangs. `**` matches any
     /// run of directories, `*` matches within one name.
     pub exclude: Vec<String>,
+    /// Exit non-zero when the score comes in under this percentage, so CI can
+    /// gate on it. 0 = no threshold.
+    pub fail_under: f64,
+    /// Draw one redrawn progress bar instead of a line per mutant. Runs of more
+    /// than a thousand mutants do this anyway; this forces it at any size.
+    pub show_loading: bool,
 }
 
 impl Default for Config {
@@ -59,6 +65,8 @@ impl Default for Config {
             sample: 0,
             timeout_factor: 2.0,
             exclude: Vec::new(),
+            fail_under: 0.0,
+            show_loading: false,
         }
     }
 }
@@ -328,6 +336,7 @@ mod tests {
         .expect("an older config must still parse");
         assert!(old.test_selection);
         assert_eq!(old.batch_size, 8);
+        assert!(!old.show_loading);
     }
 
     fn excluded(patterns: &[&str], path: &str) -> bool {

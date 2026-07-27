@@ -39,7 +39,7 @@ flowchart TD
 | `runner.rs` | Threads, project copies, patching, splitting. |
 | `warm.rs` | The long lived pytest host. |
 | `db.rs` | turso. **The only async file.** |
-| `report.rs` | `Progress` for live output, `Summary` for scoring. |
+| `report.rs` | `Progress` for live output, `Summary` for scoring, `Gate` for `--fail-under`. |
 
 ## Three rules
 

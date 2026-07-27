@@ -2,14 +2,51 @@
 
 This page takes you from nothing to a mutation score, then explains how to read it.
 
+## Install it
+
+Angelo ships as a wheel, so `pip` is the way in. Real PyPI is still to come; releases go to
+**TestPyPI** while the publishing pipeline is being proven.
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ angelo
+```
+
+The wheel holds a compiled binary and no Python at all. `pip` puts `angelo` on your PATH,
+nothing imports it, and it does not care which interpreter installed it — so a global
+install works on every project on the machine.
+
+| Platform | Wheel |
+| --- | --- |
+| Windows x86-64 | yes |
+| Linux x86-64 | yes, manylinux |
+| macOS Apple Silicon | yes |
+| Anything else | build from source |
+
+Building from source needs a Rust toolchain and nothing else:
+
+```bash
+git clone https://github.com/kvandeh/angelo.git
+cd angelo
+cargo build --release   # target/release/angelo
+```
+
+!!! warning "TestPyPI is a sandbox, not a mirror"
+    That flag points pip at TestPyPI **instead of** PyPI, so anything else in the same
+    command fails to resolve. Install Angelo on its own, or keep PyPI in the search:
+
+    ```bash
+    pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ angelo
+    ```
+
 ## Before you begin
 
 Angelo drives your existing suite, so it needs three things:
 
 1. **python and pytest on your PATH.**
-2. **A green suite.** Angelo refuses to start otherwise, because a failing test cannot
-   tell you anything about a planted fault. If pytest exits non zero, Angelo explains
-   which kind of failure it saw and stops.
+2. **A suite that runs.** A handful of already-failing tests is fine: Angelo warns, refuses
+   to score the mutants those tests cover, and measures the rest. See
+   [a red baseline](#a-red-baseline-warns-rather-than-stops). What it cannot work with is a
+   suite pytest never judged at all, such as a missing plugin, and it says which it saw.
 3. **`pip install coverage`.** Optional but strongly recommended. Coverage is what
    unlocks batching and test selection, which are most of the speed. Without it Angelo
    still works, one mutant per run.
@@ -33,21 +70,26 @@ baseline green in 1.2s, timeout 7.4s for a whole-suite run, from its own tests f
 9 mutants sit on lines no test executes, survived without a single run
 running 17 batches on 8 workers, covering tests only
 
-   killed: 46
- survived: 28
-    score: 62.2% (46/74 detected)
-
 survivors (changes your tests never noticed):
   calculator.py:31 >= -> >
   calculator.py:35 and -> or
   text.py:22 lower -> upper
+
+=== mutation report ===
+    killed: 46
+  survived: 28
+     score: 62.2% (46/74 detected)
 ```
 
-Four things worth noticing.
+Five things worth noticing.
 
 **The survivors list is the point.** Each line is a change you can make to your code
 without any test objecting. `calculator.py:31 >= -> >` says the boundary at that
 comparison is untested.
+
+**The report comes last on purpose.** A real codebase produces hundreds of survivors, and
+the score is the number you ran the command for. Printed above the list it would scroll off
+the top; printed below it, it is the last line on screen.
 
 **Nine mutants never ran.** No test executes those lines, so no test could possibly kill
 them. Angelo marks them survived immediately rather than wasting a run.
@@ -57,6 +99,11 @@ them. Angelo marks them survived immediately rather than wasting a run.
 **A score of 62 percent is normal.** Real projects commonly land between 50 and 80. A
 score of 100 usually means too few mutants, not perfect tests.
 
+Verdicts are **coloured on a terminal**: detected green, survived yellow, error red,
+untestable dim. Redirect the output, or set `NO_COLOR` to anything at all, and it comes
+back byte for byte plain, because a log full of escape codes helps nobody and `grep` least
+of all.
+
 ## Statuses
 
 | Status | Meaning |
@@ -65,11 +112,56 @@ score of 100 usually means too few mutants, not perfect tests.
 | `survived` | Everything passed. The suite missed it. |
 | `timeout` | The mutant hung, for example an infinite loop. Counts as caught, because the behaviour observably changed. |
 | `error` | The mutant broke the syntax or an import. Excluded from the score, because it never got a fair trial. |
+| `untestable` | The only tests covering it were already failing. Excluded from the score, for the same reason. |
 
 !!! warning "Check the error count first"
     A run where every mutant errors instantly looks fast and scores nothing useful. It
     almost always means a broken test command rather than a broken codebase. Read the
     `error` count before you trust any score.
+
+## A red baseline warns rather than stops
+
+Real suites carry a few known-red tests: something flaky, something xfailing on this
+platform, one module halfway through a rewrite. Blocking mutation testing of an entire
+codebase over three of them is not useful, so Angelo does not.
+
+```
+baseline RED in 3.4s, timeout 11.8s for a whole-suite run, from its own tests for a selected one
+warning: 3 tests were already failing before any mutant was planted
+warning: 374 mutants set untestable, the tests covering them are already red
+```
+
+The part worth keeping is the **reason** the rule existed. A test that was already failing
+fails again under a mutant, pytest exits 1, and exit 1 means `killed`. Every mutant those
+tests touch would be scored as detected without anything detecting anything. That is
+exactly this tool's characteristic failure — inventing a test gap that does not exist —
+running in the flattering direction.
+
+So Angelo refuses to score them instead. A mutant is judgeable only when its run can name
+its own tests and **avoid every already-failing one**. The rest come back `untestable` and
+sit outside the score, next to `error`.
+
+!!! warning "This needs coverage and test selection"
+    Naming a mutant's tests is exactly what [test selection](02-test-selection.md) does.
+    Without `coverage` installed, or with `test_selection = false`, every run executes the
+    whole red suite and comes back exit 1, so there is no way to tell a contaminated mutant
+    from a clean one. Angelo stops there and says so, because a confident 100 percent is
+    worse than no answer.
+
+## Big runs draw a bar
+
+Past **1000 mutants**, a line each stops being a report and becomes a wall. Angelo collapses
+them into one redrawn line instead.
+
+```
+  [#####################---------------]  60%  1954/3210  detected 1502  survived 452  ~4m18s left
+```
+
+The remaining time is a linear extrapolation and nothing better: batching settles mutants
+in clumps, and a batch that goes red costs several more runs while it bisects. Hence the
+`~`. Set `show_loading = true` to force the bar on a smaller project, in CI where
+scrollback costs money. `error` lines always print on their own line and the bar redraws
+underneath them.
 
 ## Make it faster or smaller
 
@@ -111,7 +203,7 @@ the base branch moved on since.
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0
-- run: angelo exec --diff-base $GITHUB_BASE_REF
+- run: angelo exec --diff-base $GITHUB_BASE_REF --fail-under 80
 ```
 
 Given no revision, `--diff-base` works one out: the branch the pull request targets, then
@@ -124,6 +216,47 @@ origin's own default branch, then `main` or `master`.
 
 **A branch that changes no Python enumerates zero mutants.** Angelo says so and prints no
 score, because zero mutants is zero information rather than a pass.
+
+## Fail the build on a bad score
+
+Without a threshold `angelo exec` always exits 0, so a pull request can take the score from
+80% to 30% and the workflow stays green. `--fail-under` is the gate.
+
+```bash
+angelo exec --fail-under 80    # exit 1 if the score comes in under 80%
+```
+
+It exits 1 and says which two numbers disagreed:
+
+```
+score 62.2% is below --fail-under 80.0%
+```
+
+`fail_under` in `angelo.conf` sets the same threshold for every run. The flag wins when
+both are given. **0 means no threshold**, and that is the default.
+
+A threshold has to be **earned**, so three runs fail it rather than passing by default.
+
+| Situation | Exit | Why |
+| --- | --- | --- |
+| Score below the threshold | 1 | The point of the flag. |
+| Every mutant `error`, so no score at all | 1 | A tool that could not measure must never report success, and this is what a broken test command looks like. |
+| Mutants still `pending` | 1 | A partial score is not a score. The pending ones could all survive. |
+| Zero mutants in scope | 0 | Nothing was measured, so there is nothing to judge. Angelo prints no score. |
+
+The comparison is against the **raw ratio**, not the rounded percentage, so 4 kills out of
+5 clears `--fail-under 80` rather than tripping over a rounding artefact. The report rounds
+to one decimal, so a threshold typed straight off it can still fail by a hair. Angelo widens
+both numbers when that happens rather than claiming 62.2% is below 62.2%:
+
+```
+score 62.1622% is below --fail-under 62.2000%
+```
+
+!!! note "Two ways to exit 1"
+    A red baseline also exits 1, but it reports as an error on stderr. A threshold failure
+    is a verdict rather than a crash, so its line lands on stdout with the rest of the
+    report.
 
 ## Configuration
 
@@ -140,6 +273,8 @@ warm_recycle_after = 50              # restart it every N runs
 sample = 0                           # 0 keeps every mutant
 timeout_factor = 2.0                 # timeout is a run's own tests * this, plus 5s
 exclude = []                         # globs to leave alone
+fail_under = 0                       # 0 means no threshold, exit 1 below this score
+show_loading = false                 # force the progress bar under 1000 mutants
 ```
 
 Any field you leave out takes its default, so a config written by an older Angelo keeps
@@ -181,9 +316,14 @@ invisible.
 
 ## When something goes wrong
 
-**"Angelo needs a green baseline."** Your suite is not passing. Angelo prints which kind
-of failure pytest reported. Exit code 1 means real test failures. Exit code 3 usually
-means a plugin listed in `pyproject.toml` is not installed.
+**"Angelo could not run the baseline suite."** pytest never got as far as judging your
+code, so there is nothing to measure. Exit code 3 usually means a plugin listed in
+`pyproject.toml` is not installed; exit code 5 means it collected no tests at all. Real
+test failures are exit code 1, and those only warn.
+
+**"The baseline suite is red and Angelo cannot work around that here."** Your suite has
+failing tests *and* no way to route around them. Install `coverage`, keep the default
+`python -m pytest` test command, and leave `test_selection = true`.
 
 **Every mutant is `error`.** Your test command is probably wrong. Run it by hand first.
 

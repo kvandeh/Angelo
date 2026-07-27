@@ -1,13 +1,14 @@
 use std::path::Path;
+use std::process::ExitCode;
 
 use anyhow::{Context, Result, bail};
 
 use crate::batch;
 use crate::config::{self, Config};
-use crate::coverage::{self, Coverage, TestCoverage};
+use crate::coverage::{self, Baseline, Coverage, TestCoverage};
 use crate::db::Database;
 use crate::diff::{ChangedLines, Scope};
-use crate::mutate::{self, Mutant};
+use crate::mutate::{self, Mutant, Status};
 use crate::pytest::Budget;
 use crate::report::{self, Progress};
 use crate::runner::TestRunner;
@@ -22,10 +23,13 @@ pub struct Options {
     pub scope: Option<Scope>,
     /// Cap the mutant pool, dropping the overflow at random.
     pub sample: Option<usize>,
+    /// Fail the run when the score lands under this percentage.
+    pub fail_under: Option<f64>,
 }
 
-pub fn run(options: Options) -> Result<()> {
+pub fn run(options: Options) -> Result<ExitCode> {
     let config = config::load_or_init()?;
+    let fail_under = options.fail_under.unwrap_or(config.fail_under);
     let angelo_dir = Path::new(ANGELO_DIR);
     let database = Database::open(angelo_dir)?;
 
@@ -48,42 +52,62 @@ pub fn run(options: Options) -> Result<()> {
             "{} mutants pending, stopping here (--init-only)",
             pending.len()
         );
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
     if pending.is_empty() {
         println!("nothing pending");
-        return summarise(&database);
+        return summarise(&database, fail_under);
     }
 
     let test_command = config.test_command_parts()?;
     println!("baseline: running the unmutated suite once, with per-test coverage");
-    let (baseline, coverage) = coverage::baseline(Path::new("."), &test_command, angelo_dir)?;
+    let baseline = coverage::baseline(Path::new("."), &test_command, angelo_dir)?;
+    let coverage = baseline.coverage.as_ref();
     if coverage.is_none() {
         println!(
             "no per-test coverage (needs `pip install coverage` and the default pytest command), no batching, no test selection"
         );
     }
-    let budget = Budget::new(baseline, config.timeout_factor);
+    let budget = Budget::new(baseline.duration, config.timeout_factor);
     println!(
-        "baseline green in {:.1}s, timeout {:.1}s for a whole-suite run, from its own tests for a selected one",
-        baseline.as_secs_f64(),
+        "baseline {} in {:.1}s, timeout {:.1}s for a whole-suite run, from its own tests for a selected one",
+        if baseline.is_green() { "green" } else { "RED" },
+        baseline.duration.as_secs_f64(),
         budget.whole_suite().as_secs_f64()
     );
 
-    let (testable, untested) = split_untested(pending, coverage.as_ref());
+    let (testable, untested) = split_untested(pending, coverage);
     if !untested.is_empty() {
-        database.record_survived_unrun(&untested)?;
+        database.set_status(&untested, Status::Survived)?;
         println!(
             "{} mutants sit on lines no test executes, survived without a single run",
             untested.len()
         );
     }
+
+    let (testable, untestable) = split_untestable(testable, &baseline, config.test_selection)?;
+    // Said whenever the baseline is red, not only when it cost a mutant: a
+    // suite the reader believed was green is news on its own.
+    if !baseline.is_green() {
+        eprintln!(
+            "warning: {} tests were already failing before any mutant was planted",
+            baseline.already_failing.len()
+        );
+    }
+    if !untestable.is_empty() {
+        database.set_status(&untestable, Status::Untestable)?;
+        eprintln!(
+            "warning: {} mutants set untestable, the tests covering them are already red, so a \
+             run could not tell a kill from the failure that was already there",
+            untestable.len()
+        );
+    }
     if testable.is_empty() {
-        return summarise(&database);
+        return summarise(&database, fail_under);
     }
 
-    let mut progress = Progress::new(&testable);
-    let batches = batch::compose(testable, coverage.as_ref(), config.batch_size);
+    let mut progress = Progress::new(&testable, config.show_loading);
+    let batches = batch::compose(testable, coverage, config.batch_size);
     let workers = config
         .effective_workers(options.workers)
         .min(batches.len())
@@ -106,12 +130,13 @@ pub fn run(options: Options) -> Result<()> {
         budget,
         test_selection: config.test_selection,
     };
-    runner.run_all(&batches, coverage.as_ref(), workers, |outcome| {
+    runner.run_all(&batches, coverage, workers, |outcome| {
         progress.print(&outcome);
         database.record_batch(&outcome)
     })?;
+    progress.finish();
 
-    summarise(&database)
+    summarise(&database, fail_under)
 }
 
 fn enumerate(database: &Database, config: &Config, scope: Option<&Scope>) -> Result<()> {
@@ -190,6 +215,10 @@ fn sample(database: &Database, keep: usize) -> Result<()> {
 }
 
 /// Mutants no test executes cannot be killed, so they never need a run.
+///
+/// This has to happen before the fair-trial split: an untested mutant survives
+/// without a run whether the baseline is green or red, and its empty selection
+/// would otherwise read as untestable.
 fn split_untested(pending: Vec<Mutant>, coverage: Option<&Coverage>) -> (Vec<Mutant>, Vec<Mutant>) {
     let Some(coverage) = coverage else {
         return (pending, Vec::new());
@@ -199,14 +228,55 @@ fn split_untested(pending: Vec<Mutant>, coverage: Option<&Coverage>) -> (Vec<Mut
         .partition(|mutant| !matches!(coverage.classify(mutant), TestCoverage::Untested))
 }
 
-fn summarise(database: &Database) -> Result<()> {
+/// Under a red baseline, keep only the mutants whose run can avoid every test
+/// that was already failing. The rest are `untestable`: a run would exit 1
+/// because of the failure that was already there and score them `killed`.
+///
+/// Working around a red baseline needs both a coverage map and test selection.
+/// Without either, every run executes the whole red suite, nothing distinguishes
+/// a contaminated mutant from a clean one, and every mutant in the project would
+/// come back detected. Inventing a perfect score is worse than refusing to run,
+/// so that combination still stops.
+fn split_untestable(
+    pending: Vec<Mutant>,
+    baseline: &Baseline,
+    test_selection: bool,
+) -> Result<(Vec<Mutant>, Vec<Mutant>)> {
+    if baseline.is_green() {
+        return Ok((pending, Vec::new()));
+    }
+    let failing = baseline.already_failing.len();
+    let Some(coverage) = baseline.coverage.as_ref().filter(|_| test_selection) else {
+        bail!(
+            "the baseline suite is red ({failing} tests already failing) and angelo cannot work \
+             around that here.\nSkipping the mutants those tests cover needs per-test coverage \
+             and test selection: `pip install coverage`, keep the default `python -m pytest` \
+             test_command, and leave test_selection = true in {}.\nOtherwise every run executes \
+             the whole red suite, exits 1, and every mutant is scored killed.",
+            config::CONFIG_FILE
+        );
+    };
+    Ok(pending
+        .into_iter()
+        .partition(|mutant| coverage.gets_a_fair_trial(mutant, &baseline.already_failing)))
+}
+
+/// Print the report, then hand CI an exit code. A threshold failure is a
+/// verdict rather than a crash, so it says its piece on stdout with the rest of
+/// the report; a red baseline still comes out of `anyhow` on stderr.
+fn summarise(database: &Database, fail_under: f64) -> Result<ExitCode> {
     let counts = database.status_counts()?;
     if counts.is_empty() {
         // An empty pool is not a pass. A docs-only branch scoped by --diff-base
-        // lands here, and a score over nothing would read as one.
+        // lands here, and a score over nothing would read as one. There is
+        // nothing for a threshold to judge either, so it is not a failure.
         println!("no mutants in scope: nothing was measured, so there is no score");
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
-    report::print_summary(&counts, &database.survivors()?);
-    Ok(())
+    let summary = report::print_summary(&counts, &database.survivors()?);
+    let Some(failure) = summary.gate(fail_under).failure() else {
+        return Ok(ExitCode::SUCCESS);
+    };
+    println!("{failure}");
+    Ok(ExitCode::FAILURE)
 }

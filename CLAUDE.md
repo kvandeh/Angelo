@@ -20,7 +20,7 @@ same thing.
 * SQL, templates and tables live in files, not in string literals; see [Keep data in data files](#keep-data-in-data-files).
 * Comment the weird, not the obvious; see [Comment the weird, not the obvious](#comment-the-weird-not-the-obvious).
 * Pure logic gets a unit test in the same file; see [Test the arithmetic, not just the workflow](#test-the-arithmetic-not-just-the-workflow).
-* A run where every mutant dies instantly is a broken test command; see [Never trust a fast run](#never-trust-a-fast-run).
+* A run where every mutant dies instantly is a broken test command, and no score is not a pass; see [Never trust a fast run](#never-trust-a-fast-run).
 * Bytecode caching silently fakes survivors; see [Never let Python reuse bytecode](#never-let-python-reuse-bytecode).
 * Windows has no `fork()` and is the first-class platform; see [Windows first](#windows-first).
 * Do not purge `__main__`, and do not revisit subinterpreters; see [Two traps that already cost a day](#two-traps-that-already-cost-a-day).
@@ -205,6 +205,10 @@ excellent suite. Check the `error` count before believing any score. This was le
 during the cosmic-ray study and it is the reason the summary prints a warning about error
 counts at all.
 
+The same lesson decides what `--fail-under` does with a run it could not score: it fails
+it. A tool that could not measure must never report success, and an all-`error` run is
+exactly what a broken test command produces.
+
 Related: pytest exit codes are 0 passed, 1 failures, 2 to 4 usage or internal error, 5
 nothing collected. `pytest::diagnose_baseline` turns each into a sentence, because a
 collection error buries its real cause under hundreds of tracebacks — only the last 40
@@ -263,8 +267,10 @@ errors — a typo is invisible otherwise. Filtering happens at enumeration, so `
 has to be deleted before a new pattern applies, the same rule as `--diff`.
 
 **CLI.** `init` writes `angelo.conf`. `exec` enumerates mutants into the database and then
-runs them (`--workers N`, `--init-only`, `--diff`, `--diff-base`, `--sample`). Re-running
-`exec` resumes `pending` rows; a fresh run means deleting `.angelo/`.
+runs them (`--workers N`, `--init-only`, `--diff`, `--diff-base`, `--sample`,
+`--fail-under`). Re-running `exec` resumes `pending` rows; a fresh run means deleting
+`.angelo/`. `main` returns `ExitCode` rather than `()`, because the threshold needs an exit
+code that is not an error.
 
 **Database.** turso 0.7. Its API is async, so it is quarantined inside `src/db.rs` behind a
 current-thread tokio runtime and `block_on`; everything else in the codebase is sync.
@@ -328,8 +334,64 @@ with junit XML and killed on timeout. `std::thread::scope` with an `AtomicUsize`
 and an mpsc channel; the main thread owns every database write.
 
 **Statuses.** `killed` (exit 1), `survived` (exit 0), `timeout`, `error` (any other exit,
-including 5, nothing collected). Score is `(killed + timeout) / (killed + timeout +
-survived)`.
+including 5, nothing collected), `untestable` (no run could judge it fairly). Score is
+`(killed + timeout) / (killed + timeout + survived)`, so `error` and `untestable` sit
+outside it. `STATUSES` in `mutate.rs` is the one list `parse` and its test both read.
+
+**Red baselines.** A red baseline warns and keeps going. Exit 1 means pytest judged the
+code and some of it failed, which is a normal state for a real suite; exits 2 to 5 mean it
+never judged anything, so there is no duration to measure and no junit report to read, and
+those still bail. The reason the old rule existed is kept: an already-failing test fails
+again under a mutant, pytest exits 1, and exit 1 is `killed`. So a mutant is judgeable only
+when `Coverage::gets_a_fair_trial` says its selection can name its own tests and avoid
+every already-red node id. The rest are `untestable`. This **needs coverage and
+`test_selection`** — without them every run is the whole red suite and every mutant scores
+`killed`, so that combination bails with a message naming the missing piece rather than the
+failing tests. Untested mutants are split off *first*, because a mutant no test executes
+survives without a run whether the baseline is green or red.
+
+**Progress.** Over 1000 mutants, or with `show_loading = true`, the line-per-mutant output
+collapses into one `\r`-redrawn bar. No dependency: a progress-bar crate buys nothing over
+a carriage return. `error` lines still print on their own line and the bar redraws
+underneath, because a broken test command is the loudest thing this tool has to say. The
+remaining-time estimate is a linear extrapolation and says `~`, since batching settles
+mutants in clumps and a red batch bisects into more runs. `bar_line` is pure and
+unit-tested; the drawing is not.
+
+**Output.** The survivor list prints **above** the report, so the score is the last line
+on screen rather than five hundred survivors up. Verdicts carry colour through `Paint` in
+`report.rs`: detected green, survived yellow, error red, untestable dim, the score bold,
+the bar's filled run green. Hand-rolled ANSI, because `std::io::IsTerminal` makes the
+check free and four escape codes are cheaper than a dependency. **Colour reaches a
+terminal and nothing else** — `colour_wanted` is off when stdout is redirected or
+`NO_COLOR` is set to any value, empty included, because `verdict-matrix.sh` greps those
+very lines and so does anyone piping a run into `grep`. The decision is unit-tested; the
+escape codes are not. Two things that bite: a label is padded *before* it is painted, or
+the column counts escapes, and the bar is measured before it is painted, or `erase`
+overruns the line.
+
+**Allocation.** Four hot spots were fixed and two famous suggestions were rejected. Fixed:
+`Lines` in `mutate.rs` carries a cursor, so a file is scanned once rather than once per
+mutant; `Coverage::build` looks a file up once per row, not once per covered line;
+`Coverage::covering` borrows the covering set, and only `batch.rs` clones one;
+`Mutant::splice_into` uses `String::replace_range` rather than rebuilding the whole file
+once per batch member. Rejected: **rayon**, because `TestRunner::run_all` already fans out
+with `std::thread::scope` and the work is a subprocess, not arithmetic; **`swap_remove`**,
+because there is no order-preserving `Vec::remove` anywhere to apply it to. Measured, and
+the number is small on purpose: see
+[benchmarks](docs/05-benchmarks.md#the-allocation-pass).
+
+**Thresholds.** `--fail-under PERCENT`, or `fail_under` in config, with the flag winning. 0
+is off and is the default. `Summary::gate` owns the decision and returns a `Gate`, so the
+arithmetic is unit-tested rather than inferred from an exit code. A threshold has to be
+**earned**: an all-`error` run has no score and fails it, and a run with `pending` rows
+fails it too, because a partial score is not a score. A **zero-mutant pool passes** and
+prints nothing — a docs-only `--diff-base` branch lands there, and there is no measurement
+to judge. The comparison is `detected * 100 >= threshold * scored`, the raw ratio rather
+than the rounded percentage, so 4 of 5 clears `--fail-under 80` instead of tripping over
+how it prints. Both a threshold failure and a red baseline exit 1, and they stay
+distinguishable: the threshold prints its one line on stdout with the report, while the red
+baseline comes out of `anyhow` on stderr.
 
 **Sampling.** `--sample N`, or `sample` in config. It **deletes the overflow rows**,
 because the sample *is* the study: the score is an estimate over a random draw from the
@@ -353,10 +415,38 @@ enumeration, so `.angelo/` has to be deleted before the scope can widen again. A
 prints no score at all: zero mutants is zero information, not a pass.
 
 **Name.** Angelo, renamed from magneto on 2026-07-26. `angelo` on crates.io is free; on
-PyPI it is a dead 2021 turtle-graphics toy with one release. The PyPI suffix gets settled
-at publish time, not before.
+PyPI it is a dead 2021 turtle-graphics toy with one release. On **TestPyPI** the plain name
+is free, so the playground publishes as `angelo` and the real PyPI suffix still gets
+settled at publish time, not before.
 
-**Roadmap.** More operators, maturin wiring, conda.
+**Packaging.** `pyproject.toml`, maturin with `bindings = "bin"`. The wheel carries
+`angelo.exe` in its scripts directory and no Python whatsoever, so the tag is
+`py3-none-<platform>` and the interpreter that installed it is irrelevant. The version is
+`dynamic` and read from Cargo.toml, which stays the one place a release number lives.
+Wheels only, no sdist: an sdist would make an unsupported platform quietly compile Rust
+for five minutes instead of saying it has no wheel. PyPI metadata lives in
+`pyproject.toml`, not in Cargo.toml, so the two files do not compete.
+
+**Publishing.** TestPyPI, over OIDC **trusted publishing**, so no token exists in the
+repository at all. The match is on three names together — repository, workflow file name,
+environment — and renaming `release.yml` breaks the upload until the publisher on TestPyPI
+is renamed to match.
+
+It lives **inside `release.yml`** rather than in a workflow of its own, and that is not a
+tidiness preference. A GitHub Release cut with the default `GITHUB_TOKEN` never starts
+another workflow, so a separate publishing workflow could not be triggered by the release
+it exists to publish; it would sit silent while looking wired up. One workflow, one
+trigger, one version.
+
+`version` reads Cargo.toml and decides two things: whether to cut a release (no, if the tag
+exists) and whether to build wheels (yes on a manual run either way, so a broken publisher
+can be retried without a version bump). `release` and `testpypi` then run **beside** each
+other, so a sandbox being down never blocks shipping a binary that already built. The
+wheels job uploads `target/release/angelo.exe` too, because maturin ran a plain
+`cargo build --release` and the release should not build the same binary twice. No
+`skip-existing`; a version TestPyPI already holds should fail loudly and be bumped.
+
+**Roadmap.** More operators, aarch64 and Intel-macOS wheels, real PyPI, conda.
 
 ## Where the code lives
 
@@ -375,8 +465,9 @@ Flat modules with one nested directory, the same shape as cargo-mutants.
 | `src/runner.rs` | `TestRunner` spawns a `Worker` per thread; `WorkerCopy`, `PatchedFiles`, `WarmWorker` |
 | `src/warm.rs` + `src/runner/worker.py` | the long-lived pytest host and its driver |
 | `src/db.rs` + `src/db/schema.sql` | turso, the only async file, and the schema |
-| `src/report.rs` | `Progress` (live lines) and `Summary` (scoring, unit-tested) |
+| `src/report.rs` | `Progress` (live lines or one redrawn bar) and `Summary` (scoring, unit-tested) |
 | `tests/end_to_end.rs` | the real binary against throwaway Python projects |
+| `pyproject.toml` | maturin's wheel recipe and the PyPI metadata |
 | `demo/` | a pytest project for manual runs |
 
 ## Write documentation in the project's register
@@ -402,7 +493,7 @@ reads as clear.
 | --- | --- |
 | **lint-and-test** | lint on every push; tests and the verdict matrix on a pull request or on master/main/develop, ubuntu and windows |
 | **docs** | on push to master: builds and deploys to Pages |
-| **release** | on push to master: version from Cargo.toml, skipped if the tag exists, ships `angelo.exe` and `src.zip`, body is the merge commit message |
+| **release** | on push to master, or by hand: version from Cargo.toml, skipped if the tag exists, builds a wheel per platform, ships `angelo.exe` and `src.zip`, uploads to TestPyPI, body is the merge commit message |
 
 `scripts/bench-repo.sh` stays a local tool and has no workflow.
 

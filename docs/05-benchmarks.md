@@ -3,7 +3,8 @@
 !!! abstract "In one sentence"
     Stacked, Angelo's optimisations take a 48 second job down to 4.5 seconds with
     unchanged verdicts. This note records the measurements, the comparison against mutmut,
-    and one bug that made an earlier set of numbers false.
+    one bug that made an earlier set of numbers false, and one optimisation that worked
+    and bought nothing.
 
 ## Method
 
@@ -116,8 +117,52 @@ rather than reported, because it compares two different tools.
 
 ### flask
 
-Skipped. Its suite is not green on this machine out of the box, and Angelo will not run
-against a red baseline.
+Skipped, and no longer for the reason given here before. Its suite is not green on this
+machine out of the box, which used to stop Angelo outright. A
+[red baseline now warns](quick-start.md#a-red-baseline-warns-rather-than-stops) and the
+mutants those tests cover come back `untestable`, so flask is measurable — it simply has
+not been measured yet.
+
+## The allocation pass
+
+Angelo's own Rust had never been read for allocation. Four patterns were fixed: a line
+counter that rescanned a file from byte zero once per mutant, a `String` clone per covered
+line while building the coverage map, a cloned `HashSet` on every classification, and a
+full copy of the file per spliced batch member. No dependency was added and no mutant
+changed.
+
+Measured on a shallow clone of django, 523,660 lines across 2,927 files, from which Angelo
+enumerates **89,303 mutants across 908 files**. Windows 11, release build, three runs each.
+Enumeration is isolated with `exec --diff` on a clean tree, which parses and enumerates
+everything and then inserts nothing.
+
+| Phase | Before | After |
+| --- | --- | --- |
+| Enumeration alone | 1.63 s | **1.26 s** |
+| Enumeration plus the database insert | 150.4 s | 147.3 s |
+
+**Enumeration got 1.3x faster, and it did not matter.** Writing 89,303 rows costs about
+148 seconds, so the 0.37 seconds saved is a quarter of one percent of the command a user
+actually runs. On the demo project, which enumerates thirty mutants, it is unmeasurable.
+
+That is the honest result, and it points at the next thing rather than this one: the row
+insert is what makes `angelo exec` slow to start on a large codebase, and it was left
+alone here, because this was an allocation pass and one row at a time is a different
+problem.
+
+The other two fixes sit on the run path rather than on enumeration, where each saving is
+buried under a pytest process that costs 300 milliseconds. Nothing was expected there and
+nothing was measured; what they had to prove is that they change no verdict, which is what
+the [verdict matrix](https://github.com/kvandeh/angelo/blob/main/scripts/verdict-matrix.sh)
+is for.
+
+!!! note "Two suggestions that do not apply, recorded so they stop coming back"
+    **rayon.** `TestRunner::run_all` already fans out across cores with `std::thread::scope`
+    and an atomic work index, and the work is a subprocess rather than arithmetic. A
+    dependency that duplicates the standard library is a cost with no return.
+
+    **`swap_remove`.** The famous one, and there is no order-preserving `Vec::remove`
+    anywhere in the codebase to apply it to.
 
 ## Comparison against mutmut
 

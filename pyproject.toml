@@ -1,0 +1,39 @@
+# Angelo is a Rust binary, not a Python library. maturin's "bin" mode compiles
+# the crate and drops the executable into the wheel's scripts directory, so
+# `pip install angelo` puts `angelo` on PATH and nothing here is ever imported.
+#
+# The version is dynamic on purpose: Cargo.toml is the one place a release
+# number lives, and release.yml already reads it from there.
+
+[build-system]
+requires = ["maturin>=1.9,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+# Not inferred reliably, so it is stated. Without it maturin looks for pyo3.
+bindings = "bin"
+
+[project]
+name = "angelo"
+dynamic = ["version"]
+description = "Fast mutation testing for Python: one Rust binary that drives an ordinary pytest suite"
+readme = "README.md"
+authors = [{ name = "Kieran van der Heijde" }]
+keywords = ["mutation-testing", "pytest", "testing", "coverage"]
+# The binary does not link against Python; it only needs to find one that can
+# run pytest. This is the pytest floor, not an Angelo one.
+requires-python = ">=3.9"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.urls]
+Documentation = "https://angelo.kcvdh.com/"
+Source = "https://github.com/kvandeh/angelo"
+Issues = "https://github.com/kvandeh/angelo/issues"

@@ -23,7 +23,17 @@ pub enum Status {
     Survived,
     Timeout,
     Error,
+    Untestable,
 }
+
+/// Every status, so `parse` and the round-trip test read from one list.
+pub const STATUSES: &[Status] = &[
+    Status::Killed,
+    Status::Survived,
+    Status::Timeout,
+    Status::Error,
+    Status::Untestable,
+];
 
 impl Status {
     pub fn as_str(self) -> &'static str {
@@ -32,19 +42,16 @@ impl Status {
             Status::Survived => "survived",
             Status::Timeout => "timeout",
             Status::Error => "error",
+            Status::Untestable => "untestable",
         }
     }
 
     /// None for anything else in the DB, which means `pending`.
     pub fn parse(text: &str) -> Option<Status> {
-        [
-            Status::Killed,
-            Status::Survived,
-            Status::Timeout,
-            Status::Error,
-        ]
-        .into_iter()
-        .find(|status| status.as_str() == text)
+        STATUSES
+            .iter()
+            .copied()
+            .find(|status| status.as_str() == text)
     }
 
     /// A timeout counts as detected: the mutant observably changed behaviour.
@@ -54,13 +61,12 @@ impl Status {
 }
 
 impl Mutant {
-    pub fn apply(&self, source: &str) -> String {
-        format!(
-            "{}{}{}",
-            &source[..self.byte_start],
-            self.replacement,
-            &source[self.byte_end..]
-        )
+    /// Splice this mutant into the source, in place. A batch is applied back to
+    /// front so that earlier byte offsets stay valid, and the caller has already
+    /// proved the range still holds `original`, so the bounds are char
+    /// boundaries.
+    pub fn splice_into(&self, source: &mut String) {
+        source.replace_range(self.byte_start..self.byte_end, &self.replacement);
     }
 
     /// The file path with forward slashes, as coverage.py records it.
@@ -269,6 +275,7 @@ fn enumerate_source(source: &str, file: &Path) -> Result<Vec<Mutant>> {
     let mut mutants = Vec::new();
     let mut previous: Option<TokenKind> = None;
     let mut loop_headers = ForHeaders::default();
+    let mut lines = Lines::default();
 
     for token in parsed.tokens().iter() {
         let kind = token.kind();
@@ -280,6 +287,7 @@ fn enumerate_source(source: &str, file: &Path) -> Result<Vec<Mutant>> {
             previous = Some(kind);
             continue;
         }
+        let line = lines.at(source, start);
         for replacement in replacements(kind, text, previous == Some(TokenKind::Dot)) {
             if replacement == text {
                 continue;
@@ -287,7 +295,7 @@ fn enumerate_source(source: &str, file: &Path) -> Result<Vec<Mutant>> {
             mutants.push(Mutant {
                 id: 0,
                 file: file.to_path_buf(),
-                line: line_of(source, start),
+                line,
                 byte_start: start,
                 byte_end: end,
                 original: text.to_string(),
@@ -322,12 +330,29 @@ impl ForHeaders {
     }
 }
 
-fn line_of(source: &str, byte_offset: usize) -> u32 {
-    source[..byte_offset]
-        .bytes()
-        .filter(|b| *b == b'\n')
-        .count() as u32
-        + 1
+/// Line numbers for offsets that only ever move forward. The token stream is
+/// already in order, so counting from where the last question left off scans a
+/// file once, where counting from byte zero scanned it once per mutant.
+#[derive(Default)]
+struct Lines {
+    scanned: usize,
+    newlines: u32,
+}
+
+impl Lines {
+    fn at(&mut self, source: &str, byte_offset: usize) -> u32 {
+        // An offset behind the cursor cannot happen from a sorted token stream,
+        // and asking for one repeats the last answer rather than panicking.
+        self.newlines += source
+            .as_bytes()
+            .get(self.scanned..byte_offset)
+            .unwrap_or_default()
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count() as u32;
+        self.scanned = byte_offset;
+        self.newlines + 1
+    }
 }
 
 #[cfg(test)]
@@ -427,13 +452,14 @@ mod tests {
     }
 
     #[test]
-    fn apply_splices_the_replacement() {
-        let source = "x = 1 < 2\n";
-        let mutant = mutants(source)
+    fn splicing_writes_the_replacement_in_place() {
+        let mut source = "x = 1 < 2\n".to_string();
+        let mutant = mutants(&source)
             .into_iter()
             .find(|m| m.original == "<")
             .unwrap();
-        assert_eq!(mutant.apply(source), "x = 1 <= 2\n");
+        mutant.splice_into(&mut source);
+        assert_eq!(source, "x = 1 <= 2\n");
     }
 
     #[test]
@@ -443,19 +469,39 @@ mod tests {
         assert_eq!(found.iter().find(|m| m.original == "+").unwrap().line, 2);
     }
 
+    /// The counter carries a cursor, so it has to answer what a scan from byte
+    /// zero would: the same line twice for two mutants on one token, and the
+    /// right one after a jump over several newlines.
+    #[test]
+    fn line_numbers_pick_up_where_the_last_answer_left_off() {
+        let source = "a = 1\nb = 2\n\n\nc = 3\n";
+        let mut lines = Lines::default();
+        assert_eq!(lines.at(source, 0), 1);
+        assert_eq!(lines.at(source, 4), 1);
+        assert_eq!(lines.at(source, 4), 1);
+        assert_eq!(lines.at(source, 6), 2);
+        assert_eq!(lines.at(source, 14), 5);
+        assert_eq!(lines.at(source, source.len()), 6);
+    }
+
+    /// A multi-byte character is several bytes and no newline, so a line number
+    /// counts it once for its file rather than once for its bytes.
+    #[test]
+    fn line_numbers_survive_multibyte_characters() {
+        let found = mutants("s = 'héllo'\nn = 1 + 2\n");
+        assert_eq!(found.iter().find(|m| m.original == "+").unwrap().line, 2);
+    }
+
     #[test]
     fn statuses_survive_a_round_trip() {
-        for status in [
-            Status::Killed,
-            Status::Survived,
-            Status::Timeout,
-            Status::Error,
-        ] {
-            assert_eq!(Status::parse(status.as_str()), Some(status));
+        for status in STATUSES {
+            assert_eq!(Status::parse(status.as_str()), Some(*status));
         }
         assert_eq!(Status::parse("pending"), None);
         assert!(Status::Timeout.is_detected());
         assert!(!Status::Survived.is_detected());
+        // A mutant nobody could fairly try is not a mutant nobody detected.
+        assert!(!Status::Untestable.is_detected());
     }
 
     #[test]

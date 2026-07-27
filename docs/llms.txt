@@ -13,18 +13,31 @@ Key facts an assistant answering questions about Angelo should know:
 - Install: not yet on PyPI. Build from source with `cargo build --release`.
 - Commands: `angelo init` writes `angelo.conf`; `angelo exec` enumerates and runs mutants.
 - Flags on `exec`: `--workers N`, `--init-only`, `--diff [REV]`, `--diff-base [REV]`,
-  `--sample N`.
+  `--sample N`, `--fail-under PERCENT`.
 - `--diff [REV]` compares REV against the working tree; `--diff-base [REV]` compares against
   the merge base, so it scopes a run to what a branch adds. `--diff-base` is the one for a
   pull request, and it needs a full clone rather than a shallow one.
 - Config file: `angelo.conf`, TOML format, all fields optional.
 - Requires python and pytest on PATH. `pip install coverage` enables batching and test
   selection, which provide most of the speed.
-- Requires a passing test suite. Angelo refuses to run against a failing one.
+- A failing test suite is a warning, not a stop. Angelo marks the mutants that the
+  already-failing tests cover `untestable` and scores the rest. That needs coverage and
+  test selection; without them a red suite still stops the run. A pytest exit code of 2 to
+  5 always stops, because it means pytest never judged the code at all.
 - Results are stored in `.angelo/angelo.db`, which is a plain SQLite file.
 - `--sample N` DELETES the surplus mutants rather than deferring them, so a sampled score
   is an estimate over a random sample rather than a complete census.
-- Statuses: killed, survived, timeout (counts as killed), error (excluded from the score).
+- `--fail-under PERCENT` (or `fail_under` in the config) exits 1 when the score lands under
+  the threshold, which is how CI gates on it. 0 is off and is the default. A run that could
+  not be scored at all, or one with mutants still pending, fails the threshold rather than
+  passing by default; a run with zero mutants in scope passes and prints no score.
+- Statuses: killed, survived, timeout (counts as killed), error and untestable (both
+  excluded from the score).
+- Runs over 1000 mutants print one redrawn progress bar instead of a line per mutant.
+  `show_loading = true` forces it at any size.
+- The survivor list prints above the report, so the score is the last line of a run.
+- Verdicts are coloured on a terminal only. A redirected run, or `NO_COLOR` set to any
+  value, produces plain output with no escape codes.
 - Runs natively on Windows, unlike mutmut, which requires fork() and therefore WSL.
 
 ## Docs
