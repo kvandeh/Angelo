@@ -114,26 +114,22 @@ impl Coverage {
             durations: HashMap::new(),
         };
         for row in rows {
-            for line in lines_in(&row.numbits) {
-                if row.context.is_empty() {
-                    coverage
-                        .import_lines
-                        .entry(row.file.clone())
-                        .or_default()
-                        .insert(line);
-                    continue;
-                }
+            let executed = lines_in(&row.numbits);
+            // Import time is a property of the row, not of each of its lines,
+            // so the file is looked up once per row rather than once per line.
+            if row.context.is_empty() {
                 coverage
-                    .lines
-                    .entry(row.file.clone())
+                    .import_lines
+                    .entry(row.file)
                     .or_default()
-                    .entry(line)
-                    .or_default()
-                    .insert(row.context_id);
+                    .extend(executed);
+                continue;
             }
-            if !row.context.is_empty() {
-                coverage.tests.insert(row.context.clone(), row.context_id);
+            let lines = coverage.lines.entry(row.file).or_default();
+            for line in executed {
+                lines.entry(line).or_default().insert(row.context_id);
             }
+            coverage.tests.insert(row.context, row.context_id);
         }
         coverage
     }
@@ -156,18 +152,21 @@ impl Coverage {
         }
     }
 
+    /// The contexts that executed a mutant's line, borrowed. `classify` answers
+    /// the same question with an owned set, which only the batch composer needs.
+    fn covering(&self, mutant: &Mutant) -> Option<&HashSet<i64>> {
+        self.lines
+            .get(&mutant.coverage_file())
+            .and_then(|lines| lines.get(&mutant.line))
+    }
+
     pub fn classify(&self, mutant: &Mutant) -> TestCoverage {
-        let file = mutant.coverage_file();
-        let covering = self
-            .lines
-            .get(&file)
-            .and_then(|lines| lines.get(&mutant.line));
-        if let Some(tests) = covering {
+        if let Some(tests) = self.covering(mutant) {
             return TestCoverage::Tested(tests.clone());
         }
         let ran_at_import = self
             .import_lines
-            .get(&file)
+            .get(&mutant.coverage_file())
             .is_some_and(|lines| lines.contains(&mutant.line));
         if ran_at_import {
             return TestCoverage::ImportOnly;
@@ -182,7 +181,7 @@ impl Coverage {
     pub fn select(&self, mutants: &[&Mutant]) -> Selection {
         let mut contexts = HashSet::new();
         for mutant in mutants {
-            let TestCoverage::Tested(covering) = self.classify(mutant) else {
+            let Some(covering) = self.covering(mutant) else {
                 return Selection::whole_suite();
             };
             contexts.extend(covering);
@@ -239,14 +238,14 @@ impl Coverage {
     ) -> Option<Vec<(i64, Status)>> {
         let mut verdicts: Vec<(i64, Status)> =
             mutants.iter().map(|m| (m.id, Status::Survived)).collect();
+        // Looked up once per member, not once per member per failed test.
+        let covering: Vec<Option<&HashSet<i64>>> =
+            mutants.iter().map(|mutant| self.covering(mutant)).collect();
         for name in failed_tests {
             let context_id = self.tests.get(&normalize(name))?;
             let mut explained = false;
-            for (index, mutant) in mutants.iter().enumerate() {
-                let TestCoverage::Tested(covering) = self.classify(mutant) else {
-                    continue;
-                };
-                if covering.contains(context_id) {
+            for (index, covering) in covering.iter().enumerate() {
+                if covering.is_some_and(|tests| tests.contains(context_id)) {
                     verdicts[index].1 = Status::Killed;
                     explained = true;
                 }
