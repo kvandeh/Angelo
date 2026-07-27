@@ -291,6 +291,16 @@ falls back to the whole suite: too many tests is merely slow, too few invents su
 Selection and batching compete — a batch selects the union of its members' tests — but they
 stack to 7.7x on a 2 s suite.
 
+**Timeouts.** `Budget` in `pytest.rs` owns the arithmetic. A run that selected its tests is
+charged `their baseline time * timeout_factor + 5s`; a whole-suite run is charged the whole
+suite's duration on the same formula, which is what every run used to pay. Per-test times
+come from the baseline junit report's `time` attribute, summed across a node id so
+parametrised cases add up. The 5 s floor is a constant and must stay one: it covers
+interpreter start, imports and collection, none of which appear in a junit time, and the
+cold subprocess that any warm failure falls back to. **A timeout counts as detected, so a
+budget that is too tight invents kills rather than merely running slowly.** The verdict
+matrix fixture carries a deliberately hanging mutant for exactly this reason.
+
 **Warm workers.** Angelo's stand-in for `fork()`, default on. Each worker keeps one pytest
 process alive (`src/runner/worker.py`) and feeds it JSON lines. Between runs the driver
 drops every module whose `__file__` sits under the copy root, so mutated source is

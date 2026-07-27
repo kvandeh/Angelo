@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
@@ -9,6 +8,7 @@ use crate::coverage::{self, Coverage, TestCoverage};
 use crate::db::Database;
 use crate::diff::ChangedLines;
 use crate::mutate::{self, Mutant};
+use crate::pytest::Budget;
 use crate::report::{self, Progress};
 use crate::runner::TestRunner;
 use crate::warm;
@@ -59,11 +59,11 @@ pub fn run(options: Options) -> Result<()> {
             "no per-test coverage (needs `pip install coverage` and the default pytest command), no batching, no test selection"
         );
     }
-    let timeout = baseline.mul_f64(config.timeout_factor) + Duration::from_secs(5);
+    let budget = Budget::new(baseline, config.timeout_factor);
     println!(
-        "baseline green in {:.1}s, per-mutant timeout {:.1}s",
+        "baseline green in {:.1}s, timeout {:.1}s for a whole-suite run, from its own tests for a selected one",
         baseline.as_secs_f64(),
-        timeout.as_secs_f64()
+        budget.whole_suite().as_secs_f64()
     );
 
     let (testable, untested) = split_untested(pending, coverage.as_ref());
@@ -99,7 +99,7 @@ pub fn run(options: Options) -> Result<()> {
         warm_workers: config.warm_workers && warm::hostable(&test_command),
         warm_recycle_after: config.warm_recycle_after.max(1),
         test_command,
-        timeout,
+        budget,
         test_selection: config.test_selection,
     };
     runner.run_all(&batches, coverage.as_ref(), workers, |outcome| {

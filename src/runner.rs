@@ -236,7 +236,7 @@ impl<'a> Worker<'a> {
             .ok();
         }
 
-        let run = slot.as_mut()?.run(selection, self.runner.timeout);
+        let run = slot.as_mut()?.run(selection, timeout);
         match run {
             // A timed-out worker is still stuck on that test: retire it, but the
             // timeout itself is a real verdict.
@@ -258,11 +258,11 @@ impl<'a> Worker<'a> {
         }
     }
 
-    fn run_subprocess(&self, selection: &Selection) -> Result<RunReport> {
+    fn run_subprocess(&self, selection: &Selection, timeout: Duration) -> Result<RunReport> {
         let result = pytest::run(
             &self.runner.test_command,
             &self.copy.root,
-            self.runner.timeout,
+            timeout,
             selection,
         )?;
         let failed_tests = match result.status() {

@@ -37,7 +37,8 @@ pub struct Config {
     /// Cap the mutant pool at this many, dropping the rest at random.
     /// 0 = keep every mutant.
     pub sample: usize,
-    /// A mutant times out after: baseline duration * timeout_factor + 5s.
+    /// A run times out after: what its tests took * timeout_factor + 5s. A run
+    /// of the whole suite is charged the whole suite's baseline duration.
     pub timeout_factor: f64,
 }
 

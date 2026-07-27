@@ -29,7 +29,7 @@ run it again, and it picks up the pending mutants. To start over, delete `.angel
 
 ```
 enumerated 74 mutants across 3 files
-baseline green in 1.2s, per mutant timeout 7.4s
+baseline green in 1.2s, timeout 7.4s for a whole-suite run, from its own tests for a selected one
 9 mutants sit on lines no test executes, survived without a single run
 running 17 batches on 8 workers, covering tests only
 
@@ -103,7 +103,7 @@ test_selection = true                # run only covering tests
 warm_workers = true                  # keep a pytest process alive
 warm_recycle_after = 50              # restart it every N runs
 sample = 0                           # 0 keeps every mutant
-timeout_factor = 2.0                 # timeout is baseline * this, plus 5s
+timeout_factor = 2.0                 # timeout is a run's own tests * this, plus 5s
 ```
 
 Any field you leave out takes its default, so a config written by an older Angelo keeps

@@ -2,6 +2,12 @@
 # angelo's central safety claim: batching, test selection and warm workers are
 # speed features only. Every configuration must produce the SAME score on the
 # same project. This script fails CI if any of them disagrees.
+#
+# The fixture deliberately contains one mutant that hangs. A timeout counts as
+# detected, so a timeout budget that is too tight does not merely slow a run
+# down, it invents a kill; and a budget derived from the selected tests differs
+# per configuration. That is precisely the disagreement this script must catch,
+# so the hanging mutant is load-bearing and not merely decorative.
 set -uo pipefail
 
 ANGELO=${ANGELO:-./target/release/angelo}
@@ -32,10 +38,21 @@ def clamp(value, low, high):
 
 def untested(x):
     return x + 1
+
+
+# `not` is the only mutable token here, and removing it spins forever.
+def spin(flag):
+    while not flag:
+        pass
+    return flag
 PY
 
 cat > "$WORK/project/test_calc.py" <<'PY'
-from calc import add, clamp, is_adult, scale
+from calc import add, clamp, is_adult, scale, spin
+
+
+def test_spin():
+    assert spin(True)
 
 
 def test_add():
