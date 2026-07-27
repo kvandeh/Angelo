@@ -78,6 +78,15 @@ everything the optimisations save.
 
 The synthetic project has no timeouts at all, which is precisely why it showed 10.8x.
 
+!!! note "The budget was the bug, and it has changed"
+    Those 22 seconds came from the **whole suite's** duration, charged to every mutant,
+    including the ones whose selected tests are worth 50 milliseconds. A run is now
+    budgeted from [the tests it actually runs](02-test-selection.md#the-budget-follows-the-selection).
+    **These three rows predate that change and have not been re-measured.** The claim
+    still under test is that batching and selection start paying on a repository where
+    they previously did not; until click is re-run on the same machine, treat the table
+    above as the last honest measurement rather than the current one.
+
 !!! warning "Read the synthetic numbers as an upper bound"
     Independent functions, disjoint tests, and no timeouts is the best case for every
     technique in this tool. A real project with slow or hanging mutants can see no
@@ -93,8 +102,11 @@ threshold is detected on a loaded machine and survives on an idle one, because
 each other between runs for the same reason.
 
 The [verdict matrix](https://github.com/kvandeh/angelo/blob/main/scripts/verdict-matrix.sh)
-that runs in continuous integration uses a fixture with no timeouts, so it cannot catch
-this class of variation. That is a known gap rather than a passing grade.
+that runs in continuous integration used a fixture with no timeouts, so it could not catch
+this class of variation at all. That gap is now closed: the fixture contains one mutant
+that deliberately spins forever, and all eight configurations must agree that it timed
+out. A budget derived from the selected tests differs per configuration, which is exactly
+the disagreement the matrix exists to catch.
 
 ### An invalid fourth row
 

@@ -129,6 +129,55 @@ fn calculator_project(name: &str) -> Project {
         .write("test_calculator.py", TESTS)
 }
 
+/// One mutable token, `not`, and removing it spins forever on `spin(True)`.
+/// Any other operator here would add mutants that are not the point.
+const SPINNER: &str = "\
+def spin(flag):
+    while not flag:
+        pass
+    return flag
+";
+
+const SPINNER_TESTS: &str = "\
+from spinner import spin
+
+
+def test_spin():
+    assert spin(True)
+";
+
+/// A hanging mutant must still be caught once the budget comes from the tests
+/// rather than the suite. Too tight a budget would be worse than slowness: a
+/// timeout counts as detected, so it would invent kills.
+fn spins_until_the_budget_runs_out(name: &str, warm_workers: bool) {
+    let project = Project::new(name)
+        .write("spinner.py", SPINNER)
+        .write("test_spinner.py", SPINNER_TESTS)
+        .write(
+            "angelo.conf",
+            &format!(
+                "paths = [\".\"]\ntest_command = \"python -m pytest\"\nworkers = 1\n\
+                 batch_size = 1\ntest_selection = true\nwarm_workers = {warm_workers}\n\
+                 warm_recycle_after = 50\ntimeout_factor = 2.0\n"
+            ),
+        );
+
+    let stdout = project.angelo(&["exec"]).expect_success();
+    assert!(stdout.contains("enumerated 1 mutants"), "{stdout}");
+    assert!(stdout.contains("timeout: 1"), "{stdout}");
+    assert!(stdout.contains("score: 100.0%"), "{stdout}");
+}
+
+#[test]
+fn a_hanging_mutant_times_out_on_the_warm_path() {
+    spins_until_the_budget_runs_out("timeout-warm", true);
+}
+
+#[test]
+fn a_hanging_mutant_times_out_on_the_cold_path() {
+    spins_until_the_budget_runs_out("timeout-cold", false);
+}
+
 #[test]
 fn init_writes_a_config() {
     let project = Project::new("init");

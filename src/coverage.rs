@@ -20,6 +20,8 @@ pub struct Coverage {
     import_lines: HashMap<String, HashSet<u32>>,
     /// context id -> pytest node id, empty until the baseline resolves them
     node_ids: HashMap<i64, String>,
+    /// context id -> what that node id took in the baseline run
+    durations: HashMap<i64, Duration>,
 }
 
 pub enum TestCoverage {
@@ -71,6 +73,7 @@ impl Coverage {
             tests: HashMap::new(),
             import_lines: HashMap::new(),
             node_ids: HashMap::new(),
+            durations: HashMap::new(),
         };
         for row in rows {
             for line in lines_in(&row.numbits) {
@@ -97,17 +100,21 @@ impl Coverage {
         coverage
     }
 
-    /// Pair each coverage context with the pytest node id that can run it.
-    /// Contexts that cannot be resolved simply stay out, which costs a
-    /// full-suite run rather than a wrong one.
+    /// Pair each coverage context with the pytest node id that can run it, and
+    /// with what that node id cost. Contexts that cannot be resolved simply
+    /// stay out, which costs a full-suite run rather than a wrong one.
     pub(crate) fn resolve_node_ids(&mut self, testcases: &[TestCase], root: &Path) {
         for test in testcases {
             let Some(context_id) = self.tests.get(&test.context_name()) else {
                 continue;
             };
-            if let Some(node_id) = test.node_id(root) {
-                self.node_ids.insert(*context_id, node_id);
-            }
+            let Some(node_id) = test.node_id(root) else {
+                continue;
+            };
+            self.node_ids.insert(*context_id, node_id);
+            // Parametrised cases collapse onto one context and one node id, and
+            // running that id runs every parameter, so their times add up.
+            *self.durations.entry(*context_id).or_default() += test.duration;
         }
     }
 
@@ -130,20 +137,29 @@ impl Coverage {
         TestCoverage::Untested
     }
 
-    /// The tests that can possibly kill this batch. Falls back to the whole
-    /// suite whenever a member's tests cannot be named exactly, running too
-    /// many tests is slow, running too few would invent survivors.
+    /// The tests that can possibly kill this batch, and what they cost in the
+    /// baseline. Falls back to the whole suite whenever a member's tests cannot
+    /// be named exactly, running too many tests is slow, running too few would
+    /// invent survivors.
     pub fn select(&self, mutants: &[&Mutant]) -> Selection {
-        let mut test_ids = HashSet::new();
+        let mut contexts = HashSet::new();
         for mutant in mutants {
             let TestCoverage::Tested(covering) = self.classify(mutant) else {
                 return Selection::whole_suite();
             };
-            for context_id in covering {
-                match self.node_ids.get(&context_id) {
-                    Some(node_id) => test_ids.insert(node_id.clone()),
-                    None => return Selection::whole_suite(),
-                };
+            contexts.extend(covering);
+        }
+
+        let mut test_ids = HashSet::new();
+        // Times come from a run wrapped in coverage.py, so they are longer than
+        // an unwrapped run's. Erring long is the safe direction for a budget.
+        let mut baseline_time = Duration::ZERO;
+        for context_id in contexts {
+            let Some(node_id) = self.node_ids.get(&context_id) else {
+                return Selection::whole_suite();
+            };
+            if test_ids.insert(node_id.clone()) {
+                baseline_time += self.durations.get(&context_id).copied().unwrap_or_default();
             }
         }
         if test_ids.is_empty() {
@@ -154,6 +170,7 @@ impl Coverage {
         Selection {
             test_ids,
             stop_at_first_failure: mutants.len() == 1,
+            baseline_time: Some(baseline_time),
         }
     }
 
@@ -284,12 +301,16 @@ mod tests {
     }
 
     /// Pretends every context resolved, without touching the filesystem.
+    /// Context N takes N hundred milliseconds, so a sum names its members.
     fn with_node_ids(mut coverage: Coverage) -> Coverage {
         for (name, id) in coverage.tests.clone() {
             let function = name.rsplit('.').next().unwrap_or(&name).to_string();
             coverage
                 .node_ids
                 .insert(id, format!("test_calc.py::{function}"));
+            coverage
+                .durations
+                .insert(id, Duration::from_millis(100 * id as u64));
         }
         coverage
     }
@@ -351,6 +372,61 @@ mod tests {
         let unresolved = coverage();
         let tested = mutant(2, "calc.py", 2);
         assert!(unresolved.select(&[&tested]).test_ids.is_empty());
+    }
+
+    /// The budget for a run comes from this number, so a selection that names
+    /// its tests must also cost them.
+    #[test]
+    fn a_selection_carries_what_its_tests_cost() {
+        let coverage = with_node_ids(coverage());
+        let only_both = mutant(1, "calc.py", 4);
+        assert_eq!(
+            coverage.select(&[&only_both]).baseline_time,
+            Some(Duration::from_millis(200))
+        );
+
+        // A batch is charged for the union, matching the tests it selects.
+        let shared = mutant(2, "calc.py", 2);
+        assert_eq!(
+            coverage.select(&[&only_both, &shared]).baseline_time,
+            Some(Duration::from_millis(300))
+        );
+    }
+
+    /// An uncosted run has to keep paying the whole suite's budget, otherwise
+    /// the fallback silently becomes the tightest path instead of the safest.
+    #[test]
+    fn a_whole_suite_fallback_refuses_to_be_costed() {
+        let coverage = with_node_ids(coverage());
+        let import_time = mutant(1, "calc.py", 6);
+        assert!(coverage.select(&[&import_time]).baseline_time.is_none());
+    }
+
+    /// Parameters collapse onto one context and one node id, and running that
+    /// id runs every parameter, so the budget has to cover all of them.
+    #[test]
+    fn parametrised_cases_add_up_to_one_node_id() {
+        let mut coverage = Coverage::build(vec![CoverageRow {
+            file: "calc.py".to_string(),
+            context_id: 7,
+            context: "src.runner.worker.test_x".to_string(),
+            numbits: vec![0b0000_0100],
+        }]);
+        // Resolution walks real paths, so this borrows a .py file the repo has.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let cases: Vec<TestCase> = ["test_x[1]", "test_x[2]"]
+            .iter()
+            .map(|name| TestCase {
+                classname: "src.runner.worker".to_string(),
+                name: name.to_string(),
+                failed: false,
+                duration: Duration::from_millis(120),
+            })
+            .collect();
+
+        coverage.resolve_node_ids(&cases, root);
+        assert_eq!(coverage.node_ids[&7], "src/runner/worker.py::test_x");
+        assert_eq!(coverage.durations[&7], Duration::from_millis(240));
     }
 
     #[test]
