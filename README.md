@@ -82,7 +82,7 @@ goes to starting Python and importing pytest. Angelo attacks that from four dire
 | [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | Runs. Several mutants share one test run. |
 | [Test selection](https://angelo.kcvdh.com/02-test-selection/) | Tests. Only the ones that reach the mutant. |
 | [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | Startup. One pytest process stays alive. |
-| `--diff` and `--sample` | Mutants. Only changed lines, or a random sample. |
+| `--diff`, `--diff-base` and `--sample` | Mutants. Only changed lines, only what a branch adds, or a random sample. |
 
 On a synthetic 200 mutant project with a two second suite, these take **48.1s down to
 4.5s** with an identical score.
@@ -116,9 +116,17 @@ treated as a bug.
 
 Runs natively on Windows, Linux and macOS. Unlike mutmut, it does not need `fork()`.
 
-## Building
+## Installing
 
-Not yet published to PyPI. For now:
+Not on PyPI proper yet. Releases go to **TestPyPI** while the pipeline is being proven:
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ angelo
+```
+
+The wheel carries the compiled binary rather than any Python, so `pip` puts `angelo` on
+your PATH and nothing gets imported. Wheels are built for Windows x86-64, Linux x86-64 and
+Apple Silicon; anything else builds from source:
 
 ```bash
 git clone https://github.com/kvandeh/angelo.git

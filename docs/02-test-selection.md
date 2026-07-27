@@ -53,6 +53,43 @@ tool must never have.
 the mutant is caught, and the rest of the suite has nothing left to say. A batch never
 stops early, because it needs to see every failure in order to attribute them.
 
+## The budget follows the selection
+
+A run that has chosen its tests is also **timed** by them.
+
+| Run | Budget |
+| --- | --- |
+| Selected tests | their baseline time × `timeout_factor` + 5 s |
+| Whole suite | the suite's duration × `timeout_factor` + 5 s |
+
+The per-test durations come free: the baseline run's junit report already lists every test
+with a `time` attribute.
+
+**Why this is not a small saving.** A timeout costs its entire budget, every time. On
+click a 4.21 second suite gave every mutant about 22 seconds, including the mutants whose
+tests are worth 50 milliseconds, and 60 to 76 mutants collected that bill on every run.
+That is the measurement where batching and selection
+[bought nothing at all](05-benchmarks.md#a-real-codebase-where-the-numbers-do-not-hold).
+
+**The floor is a constant, deliberately.** Interpreter start, imports and collection are
+most of a short run and none of it appears in a junit `time`. Scaling the headroom with
+the tests would give the fastest tests the least room, which is backwards. Five seconds
+covers a cold start on a loaded machine, and it has to, because any warm worker failure
+falls back to a cold subprocess.
+
+## Which direction the error runs
+
+A budget that is too generous wastes time. A budget that is too tight **invents kills**,
+because a timeout counts as detected. Those two mistakes are not equally bad, so both
+terms err long.
+
+The honest limit: a mutant that makes the code slower without making it hang now crosses a
+tighter line than before, and a mutant like that would be scored as detected where it once
+survived. The
+[verdict matrix](https://github.com/kvandeh/angelo/blob/main/scripts/verdict-matrix.sh)
+now carries a deliberately hanging mutant, so a configuration that disagrees about a
+timeout fails the build rather than the reader.
+
 ## Result
 
 Two hundred mutants, eight workers.

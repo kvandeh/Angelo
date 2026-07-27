@@ -56,6 +56,9 @@ pub struct Selection {
     /// there is nothing to learn from the rest of the suite. A batch must see
     /// every failure to attribute them, so it never stops early.
     pub stop_at_first_failure: bool,
+    /// What these tests took in the baseline run. None when the run cannot be
+    /// costed, which is every whole-suite run.
+    pub baseline_time: Option<Duration>,
 }
 
 impl Selection {
@@ -63,6 +66,7 @@ impl Selection {
         Selection {
             test_ids: Vec::new(),
             stop_at_first_failure: false,
+            baseline_time: None,
         }
     }
 
@@ -74,11 +78,53 @@ impl Selection {
     }
 }
 
+/// Headroom every run gets on top of its tests: interpreter start, imports and
+/// collection, none of which the junit times include. Deliberately a constant.
+/// A 5 ms test needs it exactly as much as a 5 s one, and a warm run must not
+/// shrink it, because any warm failure falls back to a cold subprocess.
+const STARTUP_FLOOR: Duration = Duration::from_secs(5);
+
+/// How long one run may take before it counts as a timeout.
+///
+/// A timeout counts as **detected**, so a budget that is too tight does not
+/// merely slow the run down, it invents kills that never happened. That is the
+/// failure to fear here, not slowness, which is why both terms err long.
+pub struct Budget {
+    /// What the unmutated suite took, end to end.
+    suite: Duration,
+    factor: f64,
+}
+
+impl Budget {
+    pub fn new(suite: Duration, factor: f64) -> Budget {
+        // A hand-edited negative or NaN factor would panic inside mul_f64.
+        Budget {
+            suite,
+            factor: factor.max(0.0),
+        }
+    }
+
+    /// Charge a run for the tests it actually runs. A run that knows what its
+    /// tests cost is budgeted from those; anything else pays the whole suite's
+    /// budget, which is what every run used to pay.
+    pub fn for_selection(&self, selection: &Selection) -> Duration {
+        let tests = selection.baseline_time.unwrap_or(self.suite);
+        tests.mul_f64(self.factor) + STARTUP_FLOOR
+    }
+
+    /// The budget an unselected run gets, for the line printed before the run.
+    pub fn whole_suite(&self) -> Duration {
+        self.for_selection(&Selection::whole_suite())
+    }
+}
+
 pub struct TestCase {
     /// Dotted module path, plus class names for methods.
     pub classname: String,
     pub name: String,
     pub failed: bool,
+    /// What this case took in the baseline run, from junit's `time` attribute.
+    pub duration: Duration,
 }
 
 impl TestCase {
@@ -217,6 +263,13 @@ fn parse_testcases(xml: &str) -> Result<Vec<TestCase>> {
             failed: node
                 .children()
                 .any(|child| child.has_tag_name("failure") || child.has_tag_name("error")),
+            // A report without times budgets as zero, which leaves the run with
+            // the floor rather than with nothing.
+            duration: node
+                .attribute("time")
+                .and_then(|seconds| seconds.parse::<f64>().ok())
+                .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok())
+                .unwrap_or(Duration::ZERO),
         });
     }
     Ok(tests)
@@ -252,8 +305,8 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = r#"<testsuites><testsuite>
-        <testcase classname="test_calc" name="test_add"><failure message="boom"/></testcase>
-        <testcase classname="test_calc" name="test_crash"><error message="import"/></testcase>
+        <testcase classname="test_calc" name="test_add" time="0.031"><failure message="boom"/></testcase>
+        <testcase classname="test_calc" name="test_crash" time="1.250"><error message="import"/></testcase>
         <testcase classname="test_calc" name="test_fine"/>
     </testsuite></testsuites>"#;
 
@@ -319,8 +372,93 @@ mod tests {
             classname: "pkg.test_mod".to_string(),
             name: "test_x[3-abc]".to_string(),
             failed: false,
+            duration: Duration::ZERO,
         };
         assert_eq!(test.context_name(), "pkg.test_mod.test_x");
+    }
+
+    /// The whole point of budgeting a run from its own tests: without these
+    /// numbers every run pays for the whole suite.
+    #[test]
+    fn reads_each_case_duration() {
+        let times: Vec<Duration> = parse_testcases(SAMPLE)
+            .unwrap()
+            .into_iter()
+            .map(|test| test.duration)
+            .collect();
+        assert_eq!(times[0], Duration::from_millis(31));
+        assert_eq!(times[1], Duration::from_millis(1250));
+        // No time attribute at all is zero, not a parse failure.
+        assert_eq!(times[2], Duration::ZERO);
+    }
+
+    #[test]
+    fn a_nonsense_time_reads_as_zero() {
+        let odd = r#"<testsuites><testsuite>
+            <testcase classname="t" name="a" time="later"/>
+            <testcase classname="t" name="b" time="-3"/>
+        </testsuite></testsuites>"#;
+        let times: Vec<Duration> = parse_testcases(odd)
+            .unwrap()
+            .into_iter()
+            .map(|test| test.duration)
+            .collect();
+        assert_eq!(times, [Duration::ZERO, Duration::ZERO]);
+    }
+
+    fn selection_of(seconds: f64) -> Selection {
+        Selection {
+            test_ids: vec!["a.py::test_x".to_string()],
+            stop_at_first_failure: true,
+            baseline_time: Some(Duration::from_secs_f64(seconds)),
+        }
+    }
+
+    /// The click case: a 4.2 s suite budgeted every mutant 13.4 s, including
+    /// the ones running two tests worth 50 ms.
+    #[test]
+    fn a_selected_run_is_budgeted_from_its_own_tests() {
+        let budget = Budget::new(Duration::from_secs_f64(4.2), 2.0);
+        assert_eq!(budget.whole_suite(), Duration::from_secs_f64(13.4));
+        assert_eq!(
+            budget.for_selection(&selection_of(0.05)),
+            Duration::from_secs_f64(5.1)
+        );
+    }
+
+    /// Whole-suite runs are the untouched path: no coverage, an import-time
+    /// mutant, an unresolvable node id. They must keep the old formula.
+    #[test]
+    fn an_uncosted_run_still_pays_for_the_whole_suite() {
+        let budget = Budget::new(Duration::from_secs(10), 3.0);
+        assert_eq!(
+            budget.for_selection(&Selection::whole_suite()),
+            budget.whole_suite()
+        );
+        assert_eq!(budget.whole_suite(), Duration::from_secs(35));
+    }
+
+    /// Startup dwarfs a millisecond test, so the floor, not the factor, is what
+    /// keeps a fast selection from timing out on its own process start.
+    #[test]
+    fn the_floor_never_scales_away() {
+        let budget = Budget::new(Duration::from_secs(4), 2.0);
+        assert_eq!(budget.for_selection(&selection_of(0.0)), STARTUP_FLOOR);
+        let none = Budget::new(Duration::from_secs(4), 0.0);
+        assert_eq!(none.whole_suite(), STARTUP_FLOOR);
+    }
+
+    /// timeout_factor comes from a hand-edited file; mul_f64 panics on these.
+    #[test]
+    fn a_hostile_factor_does_not_panic() {
+        assert_eq!(
+            Budget::new(Duration::from_secs(2), -1.0).whole_suite(),
+            STARTUP_FLOOR
+        );
+        assert_eq!(
+            Budget::new(Duration::from_secs(2), f64::NAN).whole_suite(),
+            STARTUP_FLOOR
+        );
     }
 
     /// Without this, a same-size splice in the same second reuses stale
@@ -338,11 +476,7 @@ mod tests {
     #[test]
     fn selection_only_adds_x_for_single_mutants() {
         let mut command = Command::new("pytest");
-        Selection {
-            test_ids: vec!["a.py::test_x".to_string()],
-            stop_at_first_failure: true,
-        }
-        .apply(&mut command);
+        selection_of(0.01).apply(&mut command);
         let args: Vec<_> = command
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -351,8 +485,8 @@ mod tests {
 
         let mut batch = Command::new("pytest");
         Selection {
-            test_ids: vec!["a.py::test_x".to_string()],
             stop_at_first_failure: false,
+            ..selection_of(0.01)
         }
         .apply(&mut batch);
         let batch_args: Vec<_> = batch

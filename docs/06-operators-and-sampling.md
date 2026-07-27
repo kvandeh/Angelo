@@ -87,9 +87,8 @@ over a random sample, not a full census
 Measured on the demo: sampling 20 of 74 kept 10 from `calculator.py`, 6 from `flags.py`
 and 4 from `text.py`, spread across the pool roughly in proportion to each file's size.
 
-The shuffle is a small xorshift seeded by the pool size, so **the same project samples the
-same way twice** and two runs stay comparable. That is a deliberate choice for
-reproducibility over unpredictability.
+The shuffle is a small xorshift seeded from the current time, so **each run samples
+differently**. Re-sample by deleting `.angelo/` and running again.
 
 ## Limits
 

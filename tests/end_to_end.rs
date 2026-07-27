@@ -52,6 +52,12 @@ impl Project {
         self
     }
 
+    /// Rewrite a file and commit it, one step of a branch's history.
+    fn commit(&self, name: &str, contents: &str) -> &Project {
+        fs::write(self.root.join(name), contents).expect("writing a test file");
+        self.git(&["commit", "-aqm", &format!("edit {name}")])
+    }
+
     /// A repo with everything committed, so `--diff HEAD` starts from clean.
     fn committed(self) -> Project {
         self.git(&["init", "-q"])
@@ -127,6 +133,55 @@ fn calculator_project(name: &str) -> Project {
     Project::new(name)
         .write("calculator.py", CALCULATOR)
         .write("test_calculator.py", TESTS)
+}
+
+/// One mutable token, `not`, and removing it spins forever on `spin(True)`.
+/// Any other operator here would add mutants that are not the point.
+const SPINNER: &str = "\
+def spin(flag):
+    while not flag:
+        pass
+    return flag
+";
+
+const SPINNER_TESTS: &str = "\
+from spinner import spin
+
+
+def test_spin():
+    assert spin(True)
+";
+
+/// A hanging mutant must still be caught once the budget comes from the tests
+/// rather than the suite. Too tight a budget would be worse than slowness: a
+/// timeout counts as detected, so it would invent kills.
+fn spins_until_the_budget_runs_out(name: &str, warm_workers: bool) {
+    let project = Project::new(name)
+        .write("spinner.py", SPINNER)
+        .write("test_spinner.py", SPINNER_TESTS)
+        .write(
+            "angelo.conf",
+            &format!(
+                "paths = [\".\"]\ntest_command = \"python -m pytest\"\nworkers = 1\n\
+                 batch_size = 1\ntest_selection = true\nwarm_workers = {warm_workers}\n\
+                 warm_recycle_after = 50\ntimeout_factor = 2.0\n"
+            ),
+        );
+
+    let stdout = project.angelo(&["exec"]).expect_success();
+    assert!(stdout.contains("enumerated 1 mutants"), "{stdout}");
+    assert!(stdout.contains("timeout: 1"), "{stdout}");
+    assert!(stdout.contains("score: 100.0%"), "{stdout}");
+}
+
+#[test]
+fn a_hanging_mutant_times_out_on_the_warm_path() {
+    spins_until_the_budget_runs_out("timeout-warm", true);
+}
+
+#[test]
+fn a_hanging_mutant_times_out_on_the_cold_path() {
+    spins_until_the_budget_runs_out("timeout-cold", false);
 }
 
 #[test]
@@ -248,6 +303,82 @@ fn diff_mode_mutates_only_the_changed_line() {
     assert!(stdout.contains("> -> >="), "{stdout}");
     assert!(!stdout.contains("+ -> -"), "{stdout}");
     assert!(stdout.contains("survived: 2"), "{stdout}");
+}
+
+/// A pull request is many commits, so the unit that matters is the branch
+/// against its merge base. A line added in the first commit and deleted in the
+/// third has to count for nothing.
+#[test]
+fn diff_base_mutates_what_the_branch_net_added() {
+    let project = calculator_project("diff-base").committed();
+    project.git(&["branch", "base"]);
+    project.git(&["checkout", "-b", "feature"]);
+
+    let raised = CALCULATOR.replace("return n > 10", "return n > 12");
+    let with_triple = format!("{raised}\n\ndef triple(x):\n    return x * 3\n");
+    project.commit(
+        "calculator.py",
+        &format!("{CALCULATOR}\n\ndef triple(x):\n    return x * 3\n"),
+    );
+    project.commit("calculator.py", &with_triple);
+    project.commit("calculator.py", &raised);
+
+    let stdout = project
+        .angelo(&["exec", "--diff-base", "base"])
+        .expect_success();
+    assert!(stdout.contains("diff vs base...HEAD"), "{stdout}");
+    // Only is_big's line survives the round trip: triple came and went, and
+    // add was never touched.
+    assert!(
+        stdout.contains("2 of 5 mutants sit on changed lines"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("> -> >="), "{stdout}");
+    assert!(!stdout.contains("+ -> -"), "{stdout}");
+    assert!(stdout.contains("survived: 2"), "{stdout}");
+}
+
+/// The bug that `--diff-base` exists to fix: a two-dot diff sees the base
+/// branch's own new commits, backwards, and mutates lines the author never
+/// wrote.
+#[test]
+fn diff_base_ignores_what_the_base_gained() {
+    let project = calculator_project("diff-base-moved").committed();
+    project.git(&["branch", "base"]);
+    project.git(&["checkout", "-b", "feature"]);
+    project.commit(
+        "calculator.py",
+        &CALCULATOR.replace("return n > 10", "return n > 12"),
+    );
+
+    project.git(&["checkout", "base"]);
+    project.commit(
+        "calculator.py",
+        &CALCULATOR.replace("return x * 2", "return x * 4"),
+    );
+    project.git(&["checkout", "feature"]);
+
+    let stdout = project
+        .angelo(&["exec", "--init-only", "--diff-base", "base"])
+        .expect_success();
+    // Two dots would find four: unused's line differs from base too.
+    assert!(
+        stdout.contains("2 of 5 mutants sit on changed lines"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("2 mutants pending"), "{stdout}");
+}
+
+/// Silently preferring one flag over the other is a way to score the wrong
+/// lines, so clap refuses the pair outright.
+#[test]
+fn diff_and_diff_base_cannot_both_be_given() {
+    let project = calculator_project("diff-both").committed();
+    let stderr = project
+        .angelo(&["exec", "--diff", "HEAD", "--diff-base", "base"])
+        .expect_failure();
+
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
 }
 
 /// Sampling drops mutants from the pool, it does not merely defer them: the

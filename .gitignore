@@ -1,7 +1,9 @@
 /target
+/dist
 .angelo/
 __pycache__/
 .pytest_cache/
 extra/
 site/
 .zensical/
+.cache

@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
@@ -7,8 +6,9 @@ use crate::batch;
 use crate::config::{self, Config};
 use crate::coverage::{self, Coverage, TestCoverage};
 use crate::db::Database;
-use crate::diff::ChangedLines;
+use crate::diff::{ChangedLines, Scope};
 use crate::mutate::{self, Mutant};
+use crate::pytest::Budget;
 use crate::report::{self, Progress};
 use crate::runner::TestRunner;
 use crate::warm;
@@ -18,8 +18,8 @@ const ANGELO_DIR: &str = ".angelo";
 pub struct Options {
     pub workers: Option<usize>,
     pub init_only: bool,
-    /// Mutate only lines changed since this git revision.
-    pub diff: Option<String>,
+    /// Mutate only the lines a change touched, rather than the whole codebase.
+    pub scope: Option<Scope>,
     /// Cap the mutant pool, dropping the overflow at random.
     pub sample: Option<usize>,
 }
@@ -30,7 +30,7 @@ pub fn run(options: Options) -> Result<()> {
     let database = Database::open(angelo_dir)?;
 
     if database.mutant_count()? == 0 {
-        enumerate(&database, &config, options.diff.as_deref())?;
+        enumerate(&database, &config, options.scope.as_ref())?;
         sample(&database, options.sample.unwrap_or(config.sample))?;
     } else {
         println!(
@@ -59,11 +59,11 @@ pub fn run(options: Options) -> Result<()> {
             "no per-test coverage (needs `pip install coverage` and the default pytest command), no batching, no test selection"
         );
     }
-    let timeout = baseline.mul_f64(config.timeout_factor) + Duration::from_secs(5);
+    let budget = Budget::new(baseline, config.timeout_factor);
     println!(
-        "baseline green in {:.1}s, per-mutant timeout {:.1}s",
+        "baseline green in {:.1}s, timeout {:.1}s for a whole-suite run, from its own tests for a selected one",
         baseline.as_secs_f64(),
-        timeout.as_secs_f64()
+        budget.whole_suite().as_secs_f64()
     );
 
     let (testable, untested) = split_untested(pending, coverage.as_ref());
@@ -99,7 +99,7 @@ pub fn run(options: Options) -> Result<()> {
         warm_workers: config.warm_workers && warm::hostable(&test_command),
         warm_recycle_after: config.warm_recycle_after.max(1),
         test_command,
-        timeout,
+        budget,
         test_selection: config.test_selection,
     };
     runner.run_all(&batches, coverage.as_ref(), workers, |outcome| {
@@ -110,7 +110,17 @@ pub fn run(options: Options) -> Result<()> {
     summarise(&database)
 }
 
-fn enumerate(database: &Database, config: &Config, diff: Option<&str>) -> Result<()> {
+fn enumerate(database: &Database, config: &Config, scope: Option<&Scope>) -> Result<()> {
+    // Ask git first: a shallow clone or an unknown revision should stop the
+    // run before it parses the whole codebase, not after.
+    let scoped = match scope {
+        Some(scope) => {
+            let range = scope.range()?;
+            Some((ChangedLines::over(&range)?, range))
+        }
+        None => None,
+    };
+
     let files = config.python_files()?;
     if files.is_empty() {
         bail!(
@@ -128,12 +138,11 @@ fn enumerate(database: &Database, config: &Config, diff: Option<&str>) -> Result
         files.len()
     );
 
-    if let Some(revision) = diff {
+    if let Some((changed, range)) = scoped {
         let before = mutants.len();
-        let changed = ChangedLines::since(revision)?;
         mutants = changed.filter(mutants);
         println!(
-            "diff vs {revision}: {} of {before} mutants sit on changed lines",
+            "diff vs {range}: {} of {before} mutants sit on changed lines",
             mutants.len()
         );
         if mutants.is_empty() {
@@ -176,6 +185,13 @@ fn split_untested(pending: Vec<Mutant>, coverage: Option<&Coverage>) -> (Vec<Mut
 }
 
 fn summarise(database: &Database) -> Result<()> {
-    report::print_summary(&database.status_counts()?, &database.survivors()?);
+    let counts = database.status_counts()?;
+    if counts.is_empty() {
+        // An empty pool is not a pass. A docs-only branch scoped by --diff-base
+        // lands here, and a score over nothing would read as one.
+        println!("no mutants in scope: nothing was measured, so there is no score");
+        return Ok(());
+    }
+    report::print_summary(&counts, &database.survivors()?);
     Ok(())
 }
