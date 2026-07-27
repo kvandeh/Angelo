@@ -356,10 +356,21 @@ for five minutes instead of saying it has no wheel. PyPI metadata lives in
 
 **Publishing.** TestPyPI, over OIDC **trusted publishing**, so no token exists in the
 repository at all. The match is on three names together — repository, workflow file name,
-environment — and renaming `testpypi.yml` breaks the upload until the publisher on
-TestPyPI is renamed to match. `workflow_dispatch` only: `release.yml` cuts its GitHub
-Release with the default `GITHUB_TOKEN`, and an event raised by that token never starts
-another workflow, so `on: release` would sit silent while looking wired up. No
+environment — and renaming `release.yml` breaks the upload until the publisher on TestPyPI
+is renamed to match.
+
+It lives **inside `release.yml`** rather than in a workflow of its own, and that is not a
+tidiness preference. A GitHub Release cut with the default `GITHUB_TOKEN` never starts
+another workflow, so a separate publishing workflow could not be triggered by the release
+it exists to publish; it would sit silent while looking wired up. One workflow, one
+trigger, one version.
+
+`version` reads Cargo.toml and decides two things: whether to cut a release (no, if the tag
+exists) and whether to build wheels (yes on a manual run either way, so a broken publisher
+can be retried without a version bump). `release` and `testpypi` then run **beside** each
+other, so a sandbox being down never blocks shipping a binary that already built. The
+wheels job uploads `target/release/angelo.exe` too, because maturin ran a plain
+`cargo build --release` and the release should not build the same binary twice. No
 `skip-existing`; a version TestPyPI already holds should fail loudly and be bumped.
 
 **Roadmap.** More operators, aarch64 and Intel-macOS wheels, real PyPI, conda.
@@ -403,14 +414,13 @@ reads as clear.
 - Report the disappointing measurements too. The benchmarks page records where the
   optimisations bought nothing, and that is the reason to trust the rest of it.
 
-## Four workflows, and no more
+## Three workflows, and no more
 
 | Workflow | Runs |
 | --- | --- |
 | **lint-and-test** | lint on every push; tests and the verdict matrix on a pull request or on master/main/develop, ubuntu and windows |
 | **docs** | on push to master: builds and deploys to Pages |
-| **release** | on push to master: version from Cargo.toml, skipped if the tag exists, ships `angelo.exe` and `src.zip`, body is the merge commit message |
-| **testpypi** | manual only: builds a wheel per platform with maturin and uploads it to TestPyPI over OIDC |
+| **release** | on push to master, or by hand: version from Cargo.toml, skipped if the tag exists, builds a wheel per platform, ships `angelo.exe` and `src.zip`, uploads to TestPyPI, body is the merge commit message |
 
 `scripts/bench-repo.sh` stays a local tool and has no workflow.
 
