@@ -37,8 +37,12 @@ pub fn run(options: Options) -> Result<ExitCode> {
         enumerate(&database, &config, options.scope.as_ref())?;
         sample(&database, options.sample.unwrap_or(config.sample))?;
     } else {
+        // The pool was fixed when it was enumerated, so paths, exclude and
+        // --diff have nothing left to filter. Say so, or a new exclude looks
+        // ignored.
         println!(
-            "existing {ANGELO_DIR}/angelo.db found, resuming (delete {ANGELO_DIR}/ for a fresh run)"
+            "existing {ANGELO_DIR}/angelo.db found, resuming. paths, exclude and --diff apply at \
+             enumeration only, so delete {ANGELO_DIR}/ for a fresh run"
         );
     }
 
@@ -146,22 +150,33 @@ fn enumerate(database: &Database, config: &Config, scope: Option<&Scope>) -> Res
         None => None,
     };
 
-    let files = config.python_files()?;
-    if files.is_empty() {
+    let sources = config.python_files()?;
+    if sources.excluded_everything() {
+        bail!(
+            "every Python file under paths {:?} was excluded by {:?}, check angelo.conf",
+            config.paths,
+            config.exclude
+        );
+    }
+    if sources.files.is_empty() {
         bail!(
             "no Python files found under paths {:?}, check angelo.conf",
             config.paths
         );
     }
     let mut mutants = Vec::new();
-    for file in &files {
+    for file in &sources.files {
         mutants.extend(mutate::enumerate_file(file)?);
     }
     println!(
-        "enumerated {} mutants across {} files",
+        "enumerated {} mutants across {} files{}",
         mutants.len(),
-        files.len()
+        sources.files.len(),
+        sources.exclusion_note()
     );
+    for pattern in sources.unused_patterns() {
+        println!("warning: exclude pattern {pattern:?} matched nothing");
+    }
 
     if let Some((changed, range)) = scoped {
         let before = mutants.len();

@@ -255,6 +255,17 @@ because each interpreter gets its own `sys.modules`.
 extension. `Config` is `#[serde(default)]`, so a file written by an older build still
 loads and new fields take their defaults — add fields freely.
 
+**Exclusion.** `paths` says what to mutate, `exclude` carves out what it cannot express:
+generated code, vendored code, one module that hangs. Hand-rolled globs — `**` for any run
+of segments including none, `*` within one name — matched against one path form only,
+forward slashes relative to the project root, the same shape `Mutant::coverage_file`
+produces, so a Windows backslash on either side cannot change the answer. `**` matching
+zero segments is what lets `**/migrations/**` turn away the directory itself, and an
+excluded directory is never descended into. The count is printed, because a silent
+exclusion quietly raises the score, and a pattern that matched nothing warns rather than
+errors — a typo is invisible otherwise. Filtering happens at enumeration, so `.angelo/`
+has to be deleted before a new pattern applies, the same rule as `--diff`.
+
 **CLI.** `init` writes `angelo.conf`. `exec` enumerates mutants into the database and then
 runs them (`--workers N`, `--init-only`, `--diff`, `--diff-base`, `--sample`,
 `--fail-under`). Re-running `exec` resumes `pending` rows; a fresh run means deleting
@@ -445,7 +456,7 @@ Flat modules with one nested directory, the same shape as cargo-mutants.
 | --- | --- |
 | `src/main.rs` | clap definitions and dispatch, nothing else |
 | `src/exec.rs` | the exec workflow: enumerate, baseline, split, compose, run |
-| `src/config.rs` | angelo.conf, file discovery, `SKIP_DIRS` |
+| `src/config.rs` | angelo.conf, file discovery, `SKIP_DIRS`, `Sources` and the `exclude` globs |
 | `src/mutate.rs` | `Mutant` and `Status`, the operator table, enumeration |
 | `src/coverage.rs` | `Coverage`: coverage.py wrapping, numbits, classify/attribute/select |
 | `src/batch.rs` | `Batch` (`accepts`/`add`) and the first-fit composer |

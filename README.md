@@ -43,8 +43,6 @@ running 17 batches on 16 workers, covering tests only
 [65/65] text.py:4 "," -> "XX,XX"  killed  (1.0s)
 
 survivors (changes your tests never noticed):
-  calculator.py:4 0.21 -> 1.21
-  text.py:24 removeprefix -> removesuffix
 
 === mutation report ===
     killed: 46
