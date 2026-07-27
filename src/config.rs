@@ -40,6 +40,9 @@ pub struct Config {
     /// A run times out after: what its tests took * timeout_factor + 5s. A run
     /// of the whole suite is charged the whole suite's baseline duration.
     pub timeout_factor: f64,
+    /// Exit non-zero when the score comes in under this percentage, so CI can
+    /// gate on it. 0 = no threshold.
+    pub fail_under: f64,
     /// Draw one redrawn progress bar instead of a line per mutant. Runs of more
     /// than a thousand mutants do this anyway; this forces it at any size.
     pub show_loading: bool,
@@ -57,6 +60,7 @@ impl Default for Config {
             warm_recycle_after: 50,
             sample: 0,
             timeout_factor: 2.0,
+            fail_under: 0.0,
             show_loading: false,
         }
     }

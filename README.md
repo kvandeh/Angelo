@@ -72,6 +72,21 @@ survivors (changes your tests never noticed):
 `.angelo/` to start fresh. Results live in `.angelo/angelo.db`, a plain SQLite file you can
 open with anything.
 
+## On a pull request
+
+Mutate what the branch added, and fail if too much of it survived.
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: angelo exec --diff-base $GITHUB_BASE_REF --fail-under 80
+```
+
+`--fail-under` exits 1 with one line: `score 62.2% is below --fail-under 80.0%`. A run that
+could not be scored fails it too, because a tool that could not measure must never report
+success. See the [Quick Start](https://angelo.kcvdh.com/quick-start/).
+
 ## Why it is fast
 
 Most of a mutation run is not testing. On one selected test, roughly 95% of the 327 ms
@@ -116,9 +131,17 @@ treated as a bug.
 
 Runs natively on Windows, Linux and macOS. Unlike mutmut, it does not need `fork()`.
 
-## Building
+## Installing
 
-Not yet published to PyPI. For now:
+Not on PyPI proper yet. Releases go to **TestPyPI** while the pipeline is being proven:
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ angelo
+```
+
+The wheel carries the compiled binary rather than any Python, so `pip` puts `angelo` on
+your PATH and nothing gets imported. Wheels are built for Windows x86-64, Linux x86-64 and
+Apple Silicon; anything else builds from source:
 
 ```bash
 git clone https://github.com/kvandeh/angelo.git
