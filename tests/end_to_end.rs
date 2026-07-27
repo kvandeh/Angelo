@@ -99,6 +99,13 @@ impl Run {
         );
         self.stderr
     }
+
+    /// A run that finished but had something to warn about. Both streams come
+    /// back joined: the warnings and the summary they explain are one story.
+    fn expect_warning(self) -> String {
+        let warnings = self.stderr.clone();
+        format!("{warnings}\n{}", self.expect_success())
+    }
 }
 
 /// `add` is tested and killable, `is_big` is tested but its mutant survives,
@@ -253,19 +260,81 @@ fn init_only_enumerates_without_running() {
     assert!(resumed.contains("killed: 1"), "{resumed}");
 }
 
+/// `add` is covered by a test that already fails, `double` by one that passes.
+/// Both of `double`'s mutants die, so a red suite still produces a real score.
+const HALF_RED: &str = "\
+def add(a, b):
+    return a + b
+
+
+def double(x):
+    return x * 2
+";
+
+const HALF_RED_TESTS: &str = "\
+from calculator import add, double
+
+
+def test_add():
+    assert add(2, 3) == 6
+
+
+def test_double():
+    assert double(3) == 6
+";
+
+fn half_red_project(name: &str) -> Project {
+    Project::new(name)
+        .write("calculator.py", HALF_RED)
+        .write("test_calculator.py", HALF_RED_TESTS)
+}
+
+/// A handful of known-red tests should not block the rest of the codebase. The
+/// mutants those tests cover are refused, everything else is scored as usual.
 #[test]
-fn exec_refuses_a_red_baseline() {
-    let project = Project::new("red-baseline")
-        .write("calculator.py", CALCULATOR)
-        .write(
-            "test_calculator.py",
-            "from calculator import add\n\n\ndef test_add():\n    assert add(2, 3) == 6\n",
-        );
+fn a_red_baseline_scores_what_the_failing_tests_do_not_cover() {
+    let project = half_red_project("red-baseline");
+    let output = project.angelo(&["exec"]).expect_warning();
+
+    assert!(output.contains("baseline RED"), "{output}");
+    assert!(output.contains("1 tests were already failing"), "{output}");
+    // add's `+` is covered by the red test alone, so no run could judge it.
+    assert!(output.contains("1 mutants set untestable"), "{output}");
+    assert!(output.contains("untestable: 1"), "{output}");
+    // double's two mutants are covered by a green test and die there.
+    assert!(output.contains("killed: 2"), "{output}");
+    assert!(output.contains("score: 100.0%"), "{output}");
+}
+
+/// Without per-test coverage every run executes the whole red suite, exits 1,
+/// and scores every mutant killed. Inventing a perfect score is worse than
+/// refusing to run, so that combination still stops.
+#[test]
+fn a_red_baseline_without_test_selection_still_stops() {
+    let project = half_red_project("red-baseline-unselectable").write(
+        "angelo.conf",
+        "paths = [\".\"]\ntest_command = \"python -m pytest\"\ntest_selection = false\n",
+    );
 
     let stderr = project.angelo(&["exec"]).expect_failure();
-    assert!(stderr.contains("green baseline"), "{stderr}");
-    // Exit 1 must read as "your tests fail", not as a setup problem.
-    assert!(stderr.contains("Tests are failing"), "{stderr}");
+    assert!(stderr.contains("baseline suite is red"), "{stderr}");
+    assert!(stderr.contains("test_selection = true"), "{stderr}");
+}
+
+/// Exit 2 to 5 mean pytest never judged the code at all, so there is no
+/// duration to measure and no report to read. Those still stop.
+#[test]
+fn a_baseline_that_never_ran_still_stops() {
+    let project = calculator_project("no-tests-collected").write(
+        "angelo.conf",
+        "paths = [\".\"]\ntest_command = \"python -m pytest nothing_here.py\"\n",
+    );
+
+    let stderr = project.angelo(&["exec"]).expect_failure();
+    assert!(
+        stderr.contains("could not run the baseline suite"),
+        "{stderr}"
+    );
 }
 
 /// The whole point of diff mode: an untouched repo has nothing to mutate,

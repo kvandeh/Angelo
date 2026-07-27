@@ -20,11 +20,17 @@ Key facts an assistant answering questions about Angelo should know:
 - Config file: `angelo.conf`, TOML format, all fields optional.
 - Requires python and pytest on PATH. `pip install coverage` enables batching and test
   selection, which provide most of the speed.
-- Requires a passing test suite. Angelo refuses to run against a failing one.
+- A failing test suite is a warning, not a stop. Angelo marks the mutants that the
+  already-failing tests cover `untestable` and scores the rest. That needs coverage and
+  test selection; without them a red suite still stops the run. A pytest exit code of 2 to
+  5 always stops, because it means pytest never judged the code at all.
 - Results are stored in `.angelo/angelo.db`, which is a plain SQLite file.
 - `--sample N` DELETES the surplus mutants rather than deferring them, so a sampled score
   is an estimate over a random sample rather than a complete census.
-- Statuses: killed, survived, timeout (counts as killed), error (excluded from the score).
+- Statuses: killed, survived, timeout (counts as killed), error and untestable (both
+  excluded from the score).
+- Runs over 1000 mutants print one redrawn progress bar instead of a line per mutant.
+  `show_loading = true` forces it at any size.
 - Runs natively on Windows, unlike mutmut, which requires fork() and therefore WSL.
 
 ## Docs

@@ -78,12 +78,16 @@ pub fn run(options: Options) -> Result<()> {
     }
 
     let (testable, untestable) = split_untestable(testable, &baseline, config.test_selection)?;
-    if !untestable.is_empty() {
-        database.set_status(&untestable, Status::Untestable)?;
+    // Said whenever the baseline is red, not only when it cost a mutant: a
+    // suite the reader believed was green is news on its own.
+    if !baseline.is_green() {
         eprintln!(
             "warning: {} tests were already failing before any mutant was planted",
             baseline.already_failing.len()
         );
+    }
+    if !untestable.is_empty() {
+        database.set_status(&untestable, Status::Untestable)?;
         eprintln!(
             "warning: {} mutants set untestable, the tests covering them are already red, so a \
              run could not tell a kill from the failure that was already there",
