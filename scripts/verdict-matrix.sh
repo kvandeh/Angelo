@@ -86,8 +86,12 @@ warm_workers = $warm
 warm_recycle_after = 10
 timeout_factor = 4.0
 EOF
+    # `untestable` is exactly as wide as the summary's column, so it starts at
+    # column zero where every other status is indented. Missing it would let a
+    # configuration quietly refuse to score a mutant the others judged.
     (cd "$WORK/run" && "$OLDPWD/$ANGELO" exec --workers 2 2>&1) |
-        grep -E '^\s+(killed|survived|timeout|error):' | tr -d ' ' | sort | tr '\n' ' '
+        grep -E '^\s*(killed|survived|timeout|error|untestable):' |
+        tr -d ' ' | sort | tr '\n' ' '
 }
 
 OLDPWD=$PWD
