@@ -99,6 +99,17 @@ impl Run {
         );
         self.stderr
     }
+
+    /// A threshold failure is a verdict, not a crash: it exits non-zero with
+    /// its line on stdout, where the rest of the report is.
+    fn expect_failure_stdout(self) -> String {
+        assert!(
+            !self.succeeded,
+            "angelo should have failed:\n{}",
+            self.stdout
+        );
+        self.stdout
+    }
 }
 
 /// `add` is tested and killable, `is_big` is tested but its mutant survives,
@@ -404,6 +415,92 @@ fn sampling_above_the_pool_size_changes_nothing() {
         .expect_success();
 
     assert!(!stdout.contains("dropped at random"), "{stdout}");
+}
+
+/// The calculator always leaves `unused` alive and always kills `add`, so its
+/// score sits strictly between 1% and 100% whatever the machine's timing does
+/// to the mutants in between. Bracketing it that way tests the gate rather than
+/// the score. Every case after the first re-runs the same finished database,
+/// which resumes to "nothing pending" and costs no pytest run.
+#[test]
+fn fail_under_gates_the_score() {
+    let project = calculator_project("fail-under");
+
+    let below = project
+        .angelo(&["exec", "--fail-under", "100"])
+        .expect_failure_stdout();
+    assert!(below.contains("is below --fail-under 100.0%"), "{below}");
+
+    let above = project
+        .angelo(&["exec", "--fail-under", "1"])
+        .expect_success();
+    assert!(above.contains("score:"), "{above}");
+    assert!(!above.contains("--fail-under"), "{above}");
+
+    // No threshold: a terrible score is still a successful run.
+    let ungated = project.angelo(&["exec"]).expect_success();
+    assert!(ungated.contains("score:"), "{ungated}");
+
+    // The config key sets the same threshold for every run.
+    fs::write(
+        project.root.join("angelo.conf"),
+        "paths = [\".\"]\ntest_command = \"python -m pytest\"\nfail_under = 100.0\n",
+    )
+    .unwrap();
+    let configured = project.angelo(&["exec"]).expect_failure_stdout();
+    assert!(
+        configured.contains("is below --fail-under 100.0%"),
+        "{configured}"
+    );
+
+    // And the flag beats the file.
+    project
+        .angelo(&["exec", "--fail-under", "1"])
+        .expect_success();
+}
+
+/// Mutating `break` to `return` at module level is a syntax error, so this
+/// project's one mutant can only come back as `error`. That leaves no score at
+/// all, which is the signature of a broken test command and must never satisfy
+/// a threshold.
+const LOOPER: &str = "\
+def values():
+    return [None]
+
+
+for value in values():
+    break
+";
+
+#[test]
+fn fail_under_rejects_a_run_it_could_not_score() {
+    let project = Project::new("fail-under-unmeasured")
+        .write("looper.py", LOOPER)
+        .write(
+            "test_looper.py",
+            "from looper import values\n\n\ndef test_values():\n    assert values() == [None]\n",
+        );
+
+    let stdout = project
+        .angelo(&["exec", "--fail-under", "50"])
+        .expect_failure_stdout();
+
+    assert!(stdout.contains("error: 1"), "{stdout}");
+    assert!(!stdout.contains("score:"), "{stdout}");
+    assert!(stdout.contains("every mutant errored"), "{stdout}");
+}
+
+/// A docs-only pull request enumerates nothing. Zero mutants is zero
+/// information, so it neither prints a score nor fails the threshold.
+#[test]
+fn fail_under_passes_an_empty_pool_without_a_score() {
+    let project = calculator_project("fail-under-empty").committed();
+    let stdout = project
+        .angelo(&["exec", "--diff", "--fail-under", "90"])
+        .expect_success();
+
+    assert!(stdout.contains("no mutants in scope"), "{stdout}");
+    assert!(!stdout.contains("score:"), "{stdout}");
 }
 
 #[test]

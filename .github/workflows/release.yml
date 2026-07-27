@@ -1,80 +1,165 @@
 name: Release
 
+# One workflow, because both halves answer to the same thing: the version in
+# Cargo.toml. Splitting them does not work — a GitHub Release cut with the
+# default GITHUB_TOKEN never starts another workflow, so a separate publishing
+# workflow would sit silent while looking wired up.
 on:
   push:
     branches: [main]
+  # Lets a publish be retried without a version bump, which is what a first run
+  # against a misconfigured trusted publisher needs. TestPyPI still refuses a
+  # version it already holds, so the retry either works or fails loudly.
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+      release: ${{ steps.read.outputs.release }}
+      wheels: ${{ steps.read.outputs.wheels }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the version from Cargo.toml
+        id: read
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          tag="v$version"
+          echo "Cargo.toml says $version"
+
+          # Every push to main would otherwise re-release the same version.
+          # Bumping Cargo.toml is what cuts a release; anything else is a no-op.
+          if git ls-remote --tags origin | grep -q "refs/tags/$tag$"; then
+            release=false
+            echo "$tag already exists, so no GitHub release"
+          else
+            release=true
+          fi
+
+          # A manual run is someone asking to publish, so the wheels get built
+          # even when the tag is already cut.
+          if [ "$release" = true ] || [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            wheels=true
+          else
+            wheels=false
+          fi
+
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "release=$release"
+            echo "wheels=$wheels"
+          } >> "$GITHUB_OUTPUT"
+
+  wheels:
+    needs: version
+    if: needs.version.outputs.wheels == 'true'
+    name: wheel on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide whether the others built.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --out dist
+          # Builds inside a manylinux container, so the wheel does not demand
+          # whatever glibc the runner happened to ship. Ignored elsewhere.
+          manylinux: auto
+          sccache: true
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel-${{ matrix.os }}
+          path: dist/*.whl
+
+      # maturin runs a plain `cargo build --release`, so the binary the GitHub
+      # Release ships is already sitting here and is not worth building twice.
+      # Should maturin ever stop leaving it there, this step matches nothing and
+      # fails, rather than a release quietly shipping without its binary.
+      - uses: actions/upload-artifact@v7
+        if: matrix.os == 'windows-latest'
+        with:
+          name: angelo-exe
+          path: target/release/angelo.exe
+          if-no-files-found: error
+
   release:
-    runs-on: windows-latest
+    needs: [version, wheels]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
           # Need the merge commit's parents to read its message.
           fetch-depth: 0
 
-      - name: Read the version from Cargo.toml
-        id: version
-        shell: bash
-        run: |
-          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "Cargo.toml says $version"
-
-      # Every push to master would otherwise try to re-release the same
-      # version. Bump Cargo.toml to cut a release; otherwise this is a no-op.
-      - name: Has this version already been released?
-        id: existing
-        shell: bash
-        run: |
-          if git ls-remote --tags origin | grep -q "refs/tags/${{ steps.version.outputs.tag }}$"; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "${{ steps.version.outputs.tag }} already exists — nothing to do"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # The release notes are the merge commit's message. A direct push to
-      # master is not a merge, so it falls back to that commit's message.
+      # The release notes are the merge commit's message. A direct push to main
+      # is not a merge, so it falls back to that commit's message.
       - name: Collect the release notes
-        if: steps.existing.outputs.skip == 'false'
         shell: bash
-        run: |
-          parents=$(git rev-list --parents -n 1 HEAD | wc -w)
-          if [ "$parents" -gt 2 ]; then
-            echo "HEAD is a merge commit"
-          else
-            echo "HEAD is a direct commit, using its message"
-          fi
-          git log -1 --pretty=%B > RELEASE_NOTES.md
-          cat RELEASE_NOTES.md
-
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.existing.outputs.skip == 'false'
-      - uses: Swatinem/rust-cache@v2.9.1
-        if: steps.existing.outputs.skip == 'false'
-
-      - name: Build angelo.exe
-        if: steps.existing.outputs.skip == 'false'
-        run: cargo build --release
+        run: git log -1 --pretty=%B | tee RELEASE_NOTES.md
 
       # git archive ships tracked files only, so target/ and extra/ stay out.
       - name: Package the source
-        if: steps.existing.outputs.skip == 'false'
         shell: bash
-        run: git archive --format=zip --prefix=angelo-${{ steps.version.outputs.version }}/ -o src.zip HEAD
+        run: git archive --format=zip --prefix=angelo-${{ needs.version.outputs.version }}/ -o src.zip HEAD
 
-      - name: Publish
-        if: steps.existing.outputs.skip == 'false'
-        uses: softprops/action-gh-release@v3
+      - uses: actions/download-artifact@v8
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: angelo ${{ steps.version.outputs.version }}
+          name: angelo-exe
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: angelo ${{ needs.version.outputs.version }}
           body_path: RELEASE_NOTES.md
           files: |
-            target/release/angelo.exe
+            angelo.exe
             src.zip
+
+  # Trusted publishing, so no token exists anywhere. GitHub mints a short-lived
+  # OIDC identity and TestPyPI checks it against the publisher registered for
+  # this repository, this file name and this environment. All three are part of
+  # the match: rename this file and the upload stops until the publisher on
+  # TestPyPI is renamed with it.
+  #
+  # Runs beside the release rather than before it, so a sandbox being down never
+  # blocks shipping a binary that already built.
+  testpypi:
+    needs: [version, wheels]
+    if: needs.version.outputs.wheels == 'true'
+    runs-on: ubuntu-latest
+    # A dedicated environment, so publishing rights are not handed out with
+    # commit access.
+    environment: testpypi
+    permissions:
+      # Mints the OIDC token. Without it there is no identity to check.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@v1.14.1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # No skip-existing. TestPyPI refuses a version it already holds, and
+          # that refusal is the useful answer: publishing again means bumping
+          # Cargo.toml, not uploading nothing and reporting success.
