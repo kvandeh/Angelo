@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
@@ -79,14 +80,14 @@ impl Database {
     /// random sample of the whole codebase rather than a complete census of
     /// one arbitrary corner of it. Returns how many were dropped.
     ///
-    /// The shuffle is seeded by the pool size, so re-running the same project
-    /// picks the same sample and two runs stay comparable.
+    /// The shuffle is seeded from the current time, so re-running the same
+    /// project picks a different sample each time.
     pub fn sample_down_to(&self, keep: usize) -> Result<usize> {
         let mut ids = self.all_ids()?;
         if ids.len() <= keep {
             return Ok(0);
         }
-        let mut random = Xorshift::seeded(ids.len() as u64);
+        let mut random = get_random();
         // Fisher-Yates, then everything past `keep` goes.
         for index in (1..ids.len()).rev() {
             ids.swap(index, (random.next() % (index as u64 + 1)) as usize);
@@ -223,20 +224,29 @@ pub fn read_coverage_rows(path: &Path) -> Result<Vec<CoverageRow>> {
 
 /// Small deterministic PRNG. A dependency would buy nothing here: sampling
 /// needs spread, not cryptographic quality.
-struct Xorshift(u64);
+#[derive(Debug, Clone, Copy)]
+pub struct Xorshift(u64);
 
 impl Xorshift {
-    fn seeded(seed: u64) -> Xorshift {
+    pub fn seeded(seed: u64) -> Xorshift {
         // 0 is a fixed point of xorshift, so never start there.
         Xorshift(seed.wrapping_mul(6364136223846793005).wrapping_add(1))
     }
 
-    fn next(&mut self) -> u64 {
+    pub fn next(&mut self) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
         self.0
     }
+}
+
+pub fn get_random() -> Xorshift {
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1000);
+    Xorshift::seeded(seed)
 }
 
 fn new_runtime() -> Result<Runtime> {
@@ -251,11 +261,10 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// A biased shuffle would sample one corner of the codebase, which is
-    /// exactly the thing sampling exists to avoid.
     #[test]
     fn the_shuffle_spreads_across_the_whole_pool() {
-        let mut random = Xorshift::seeded(1000);
+        let mut random = get_random();
+
         let mut ids: Vec<usize> = (0..1000).collect();
         for index in (1..ids.len()).rev() {
             ids.swap(index, (random.next() % (index as u64 + 1)) as usize);
@@ -271,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn the_same_pool_size_samples_the_same_way() {
+    fn the_same_seed_samples_the_same_way() {
         let first: Vec<u64> = (0..5).map(|_| Xorshift::seeded(42).next()).collect();
         assert!(first.iter().all(|value| *value == first[0]));
         assert_ne!(Xorshift::seeded(42).next(), Xorshift::seeded(43).next());
