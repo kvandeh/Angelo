@@ -10,6 +10,8 @@ mod report;
 mod runner;
 mod warm;
 
+use std::process::ExitCode;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -43,23 +45,32 @@ enum Command {
         /// becomes an estimate over that sample.
         #[arg(long, value_name = "N")]
         sample: Option<usize>,
+        /// Exit 1 when the score comes in under this percentage, so CI can
+        /// gate on it (default: 0, no threshold)
+        #[arg(long, value_name = "PERCENT")]
+        fail_under: Option<f64>,
     },
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     match Cli::parse().command {
-        Command::Init => config::init(),
+        Command::Init => {
+            config::init()?;
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Exec {
             workers,
             init_only,
             diff,
             diff_base,
             sample,
+            fail_under,
         } => exec::run(exec::Options {
             workers,
             init_only,
             scope: diff::Scope::from_flags(diff, diff_base),
             sample,
+            fail_under,
         }),
     }
 }

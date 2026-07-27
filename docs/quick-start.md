@@ -111,7 +111,7 @@ the base branch moved on since.
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0
-- run: angelo exec --diff-base $GITHUB_BASE_REF
+- run: angelo exec --diff-base $GITHUB_BASE_REF --fail-under 80
 ```
 
 Given no revision, `--diff-base` works one out: the branch the pull request targets, then
@@ -124,6 +124,47 @@ origin's own default branch, then `main` or `master`.
 
 **A branch that changes no Python enumerates zero mutants.** Angelo says so and prints no
 score, because zero mutants is zero information rather than a pass.
+
+## Fail the build on a bad score
+
+Without a threshold `angelo exec` always exits 0, so a pull request can take the score from
+80% to 30% and the workflow stays green. `--fail-under` is the gate.
+
+```bash
+angelo exec --fail-under 80    # exit 1 if the score comes in under 80%
+```
+
+It exits 1 and says which two numbers disagreed:
+
+```
+score 62.2% is below --fail-under 80.0%
+```
+
+`fail_under` in `angelo.conf` sets the same threshold for every run. The flag wins when
+both are given. **0 means no threshold**, and that is the default.
+
+A threshold has to be **earned**, so three runs fail it rather than passing by default.
+
+| Situation | Exit | Why |
+| --- | --- | --- |
+| Score below the threshold | 1 | The point of the flag. |
+| Every mutant `error`, so no score at all | 1 | A tool that could not measure must never report success, and this is what a broken test command looks like. |
+| Mutants still `pending` | 1 | A partial score is not a score. The pending ones could all survive. |
+| Zero mutants in scope | 0 | Nothing was measured, so there is nothing to judge. Angelo prints no score. |
+
+The comparison is against the **raw ratio**, not the rounded percentage, so 4 kills out of
+5 clears `--fail-under 80` rather than tripping over a rounding artefact. The report rounds
+to one decimal, so a threshold typed straight off it can still fail by a hair. Angelo widens
+both numbers when that happens rather than claiming 62.2% is below 62.2%:
+
+```
+score 62.1622% is below --fail-under 62.2000%
+```
+
+!!! note "Two ways to exit 1"
+    A red baseline also exits 1, but it reports as an error on stderr. A threshold failure
+    is a verdict rather than a crash, so its line lands on stdout with the rest of the
+    report.
 
 ## Configuration
 
@@ -139,6 +180,7 @@ warm_workers = true                  # keep a pytest process alive
 warm_recycle_after = 50              # restart it every N runs
 sample = 0                           # 0 keeps every mutant
 timeout_factor = 2.0                 # timeout is a run's own tests * this, plus 5s
+fail_under = 0                       # 0 means no threshold, exit 1 below this score
 ```
 
 Any field you leave out takes its default, so a config written by an older Angelo keeps
