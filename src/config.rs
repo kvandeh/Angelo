@@ -40,6 +40,9 @@ pub struct Config {
     /// A run times out after: what its tests took * timeout_factor + 5s. A run
     /// of the whole suite is charged the whole suite's baseline duration.
     pub timeout_factor: f64,
+    /// Draw one redrawn progress bar instead of a line per mutant. Runs of more
+    /// than a thousand mutants do this anyway; this forces it at any size.
+    pub show_loading: bool,
 }
 
 impl Default for Config {
@@ -54,6 +57,7 @@ impl Default for Config {
             warm_recycle_after: 50,
             sample: 0,
             timeout_factor: 2.0,
+            show_loading: false,
         }
     }
 }
@@ -192,6 +196,7 @@ mod tests {
         .expect("an older config must still parse");
         assert!(old.test_selection);
         assert_eq!(old.batch_size, 8);
+        assert!(!old.show_loading);
     }
 
     #[test]

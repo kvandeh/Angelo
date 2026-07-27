@@ -23,7 +23,17 @@ pub enum Status {
     Survived,
     Timeout,
     Error,
+    Untestable,
 }
+
+/// Every status, so `parse` and the round-trip test read from one list.
+pub const STATUSES: &[Status] = &[
+    Status::Killed,
+    Status::Survived,
+    Status::Timeout,
+    Status::Error,
+    Status::Untestable,
+];
 
 impl Status {
     pub fn as_str(self) -> &'static str {
@@ -32,19 +42,16 @@ impl Status {
             Status::Survived => "survived",
             Status::Timeout => "timeout",
             Status::Error => "error",
+            Status::Untestable => "untestable",
         }
     }
 
     /// None for anything else in the DB, which means `pending`.
     pub fn parse(text: &str) -> Option<Status> {
-        [
-            Status::Killed,
-            Status::Survived,
-            Status::Timeout,
-            Status::Error,
-        ]
-        .into_iter()
-        .find(|status| status.as_str() == text)
+        STATUSES
+            .iter()
+            .copied()
+            .find(|status| status.as_str() == text)
     }
 
     /// A timeout counts as detected: the mutant observably changed behaviour.
@@ -445,17 +452,14 @@ mod tests {
 
     #[test]
     fn statuses_survive_a_round_trip() {
-        for status in [
-            Status::Killed,
-            Status::Survived,
-            Status::Timeout,
-            Status::Error,
-        ] {
-            assert_eq!(Status::parse(status.as_str()), Some(status));
+        for status in STATUSES {
+            assert_eq!(Status::parse(status.as_str()), Some(*status));
         }
         assert_eq!(Status::parse("pending"), None);
         assert!(Status::Timeout.is_detected());
         assert!(!Status::Survived.is_detected());
+        // A mutant nobody could fairly try is not a mutant nobody detected.
+        assert!(!Status::Untestable.is_detected());
     }
 
     #[test]
