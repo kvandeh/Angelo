@@ -15,7 +15,7 @@ use crate::batch::Batch;
 use crate::config::SKIP_DIRS;
 use crate::coverage::Coverage;
 use crate::mutate::{Mutant, Status};
-use crate::pytest::{self, Selection, SuiteResult};
+use crate::pytest::{self, Budget, Selection, SuiteResult};
 use crate::warm::WarmWorker;
 
 /// One decisive pytest run and the verdicts it settled.
@@ -66,7 +66,8 @@ impl BatchOutcome {
 pub struct TestRunner {
     pub project_root: PathBuf,
     pub test_command: Vec<String>,
-    pub timeout: Duration,
+    /// How long a run may take, worked out per run from the tests it selects.
+    pub budget: Budget,
     /// Run only the tests covering a batch instead of the whole suite.
     pub test_selection: bool,
     /// Host runs in a long-lived pytest process instead of spawning one each time.
@@ -206,16 +207,19 @@ impl<'a> Worker<'a> {
             Some(coverage) if self.runner.test_selection => coverage.select(mutants),
             _ => Selection::whole_suite(),
         };
+        // A run that names its tests is budgeted from them: waiting out the
+        // whole suite's budget for two tests worth 50ms tells us nothing.
+        let timeout = self.runner.budget.for_selection(&selection);
         let _patched = PatchedFiles::apply(&self.copy.root, mutants)?;
-        match self.run_warm(&selection) {
+        match self.run_warm(&selection, timeout) {
             Some(report) => Ok(report),
-            None => self.run_subprocess(&selection),
+            None => self.run_subprocess(&selection, timeout),
         }
     }
 
     /// None means warm running is off, unavailable, or just failed, the caller
     /// then pays for a fresh subprocess, which is always correct.
-    fn run_warm(&self, selection: &Selection) -> Option<RunReport> {
+    fn run_warm(&self, selection: &Selection, timeout: Duration) -> Option<RunReport> {
         if !self.runner.warm_workers {
             return None;
         }
