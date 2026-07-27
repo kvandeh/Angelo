@@ -252,8 +252,8 @@ extension. `Config` is `#[serde(default)]`, so a file written by an older build 
 loads and new fields take their defaults — add fields freely.
 
 **CLI.** `init` writes `angelo.conf`. `exec` enumerates mutants into the database and then
-runs them (`--workers N`, `--init-only`, `--diff`, `--sample`). Re-running `exec` resumes
-`pending` rows; a fresh run means deleting `.angelo/`.
+runs them (`--workers N`, `--init-only`, `--diff`, `--diff-base`, `--sample`). Re-running
+`exec` resumes `pending` rows; a fresh run means deleting `.angelo/`.
 
 **Database.** turso 0.7. Its API is async, so it is quarantined inside `src/db.rs` behind a
 current-thread tokio runtime and `block_on`; everything else in the codebase is sync.
@@ -326,9 +326,20 @@ whole pool, not a census of the first N. Fisher-Yates over the ids with a hand-r
 xorshift seeded by the pool size, so a re-run samples identically — reproducibility beats
 unpredictability here. Fresh enumeration only; resuming keeps the existing pool.
 
-**Diff mode.** `--diff [REV]`, default HEAD. `git diff --unified=0 --relative` is parsed
+**Diff mode.** Two flags answering two questions, held by `Scope` in `diff.rs`. `--diff
+[REV]`, default HEAD, is `git diff REV`: the revision against the working tree, which is
+what you want while editing. `--diff-base [REV]` is `git diff REV...HEAD`, the **three-dot**
+form, which is merge-base semantics: what this branch adds on top of REV, collapsed across
+however many commits it took, ignoring whatever the base gained meanwhile. Only that one
+suits a pull request, because a pushed branch has nothing uncommitted for two dots to find.
+Given no revision it works one out: `$GITHUB_BASE_REF`, then origin's own HEAD, then
+`origin/main`, `main`, `master`. clap refuses both flags at once, because silently
+preferring one is a way to score the wrong lines. A **shallow clone** has no merge base, so
+`--diff-base` stops and names `fetch-depth: 0` rather than falling back to two dots and
+reporting a confident score for the wrong lines. `git diff --unified=0 --relative` is parsed
 for added-line ranges, and mutants off those lines are never inserted. Filtering happens at
-enumeration, so `.angelo/` has to be deleted before the scope can widen again.
+enumeration, so `.angelo/` has to be deleted before the scope can widen again. An empty pool
+prints no score at all: zero mutants is zero information, not a pass.
 
 **Name.** Angelo, renamed from magneto on 2026-07-26. `angelo` on crates.io is free; on
 PyPI it is a dead 2021 turtle-graphics toy with one release. The PyPI suffix gets settled
@@ -348,7 +359,7 @@ Flat modules with one nested directory, the same shape as cargo-mutants.
 | `src/mutate.rs` | `Mutant` and `Status`, the operator table, enumeration |
 | `src/coverage.rs` | `Coverage`: coverage.py wrapping, numbits, classify/attribute/select |
 | `src/batch.rs` | `Batch` (`accepts`/`add`) and the first-fit composer |
-| `src/diff.rs` | `ChangedLines`: git hunk parsing and the changed-line filter |
+| `src/diff.rs` | `Scope` (which lines are in play) and `ChangedLines`: git hunk parsing and the changed-line filter |
 | `src/pytest.rs` | `SuiteResult`, `Selection`, `TestCase` node ids, the pytest process |
 | `src/runner.rs` | `TestRunner` spawns a `Worker` per thread; `WorkerCopy`, `PatchedFiles`, `WarmWorker` |
 | `src/warm.rs` + `src/runner/worker.py` | the long-lived pytest host and its driver |

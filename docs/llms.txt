@@ -12,7 +12,11 @@ Key facts an assistant answering questions about Angelo should know:
 
 - Install: not yet on PyPI. Build from source with `cargo build --release`.
 - Commands: `angelo init` writes `angelo.conf`; `angelo exec` enumerates and runs mutants.
-- Flags on `exec`: `--workers N`, `--init-only`, `--diff [REV]`, `--sample N`.
+- Flags on `exec`: `--workers N`, `--init-only`, `--diff [REV]`, `--diff-base [REV]`,
+  `--sample N`.
+- `--diff [REV]` compares REV against the working tree; `--diff-base [REV]` compares against
+  the merge base, so it scopes a run to what a branch adds. `--diff-base` is the one for a
+  pull request, and it needs a full clone rather than a shallow one.
 - Config file: `angelo.conf`, TOML format, all fields optional.
 - Requires python and pytest on PATH. `pip install coverage` enables batching and test
   selection, which provide most of the speed.

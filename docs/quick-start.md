@@ -78,17 +78,52 @@ Large codebases produce a lot of mutants. Two options bound the work.
 ```bash
 angelo exec --diff            # only lines changed since HEAD
 angelo exec --diff main       # only lines changed since another revision
+angelo exec --diff-base main  # only the lines this branch adds on top of main
 angelo exec --sample 500      # keep 500 mutants, drop the rest at random
 ```
 
 `--diff` is the one to reach for during development, because it scopes mutation to the
-change you are actually working on.
+change you are actually working on. `--diff-base` is the one for a pull request, and the
+next section is about why they are not the same thing.
 
 `--sample` behaves differently from what the name might suggest, and the difference
 matters. It **deletes** the surplus mutants from the database rather than deferring them.
 What remains is a random draw from the whole codebase, so the resulting score is an
 estimate over a sample rather than a complete census. Angelo says so on every sampled
 run. See [operators and sampling](06-operators-and-sampling.md).
+
+## Run it on a pull request
+
+`--diff` compares a revision against **your working tree**. That is the right question
+while you are editing and the wrong one in CI, where a pushed branch has nothing
+uncommitted and the answer is therefore nothing at all.
+
+`--diff-base` compares against the **merge base** instead: the point where your branch left
+the base. That is what the branch adds, however many commits it took, and whether or not
+the base branch moved on since.
+
+| Flag | Question it answers | What it compares |
+| --- | --- | --- |
+| `--diff [REV]` | What is different on this machine right now? | `REV` against the working tree |
+| `--diff-base [REV]` | What does this branch add on top of `REV`? | `REV` against the branch, from where they last met |
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: angelo exec --diff-base $GITHUB_BASE_REF
+```
+
+Given no revision, `--diff-base` works one out: the branch the pull request targets, then
+origin's own default branch, then `main` or `master`.
+
+!!! warning "`fetch-depth: 0` is not optional"
+    Checkouts fetch a single commit by default, and a shallow clone has no merge base to
+    diff from. Angelo stops and tells you rather than quietly comparing something else,
+    because the alternative is a confident score for lines you never wrote.
+
+**A branch that changes no Python enumerates zero mutants.** Angelo says so and prints no
+score, because zero mutants is zero information rather than a pass.
 
 ## Configuration
 
