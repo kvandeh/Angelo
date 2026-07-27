@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use tokio::runtime::Runtime;
 use turso::{Builder, Connection};
 
-use crate::mutate::Mutant;
+use crate::mutate::{Mutant, Status};
 use crate::runner::BatchOutcome;
 
 const SCHEMA: &str = include_str!("db/schema.sql");
@@ -140,11 +140,13 @@ impl Database {
         Ok(())
     }
 
-    pub fn record_survived_unrun(&self, mutants: &[Mutant]) -> Result<()> {
+    /// Settle mutants without an execution row, for the verdicts no pytest run
+    /// can produce: nothing covers it, or nothing could fairly try it.
+    pub fn set_status(&self, mutants: &[Mutant], status: Status) -> Result<()> {
         for mutant in mutants {
             self.runtime.block_on(self.connection.execute(
-                "UPDATE mutant SET status = 'survived' WHERE id = ?",
-                (mutant.id,),
+                "UPDATE mutant SET status = ? WHERE id = ?",
+                (status.as_str(), mutant.id),
             ))?;
         }
         Ok(())

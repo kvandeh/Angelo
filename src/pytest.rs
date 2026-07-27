@@ -158,8 +158,15 @@ impl TestCase {
     }
 }
 
-/// Run the untouched suite once: proves it is green, times a normal run, and
-/// (via the junit report) lists every test for later node-id resolution.
+/// Run the untouched suite once: times a normal run and (via the junit report)
+/// lists every test, both for node-id resolution and to record which cases were
+/// already failing before a single mutant existed.
+///
+/// A red suite is no longer fatal. Exit 1 means pytest judged the code and some
+/// of it failed, which angelo can work around by refusing to score whatever
+/// those tests touch. Every other non-zero exit means pytest never got as far
+/// as judging anything, so there is no duration to measure and no report to
+/// read, and the run stops.
 pub fn run_baseline(
     project_root: &Path,
     test_command: &[String],
@@ -170,10 +177,10 @@ pub fn run_baseline(
         .arg(format!("--junit-xml={}", junit_path.display()))
         .output()
         .context("running the baseline suite (is python on PATH?)")?;
-    if !output.status.success() {
-        let code = output.status.code().map(i64::from).unwrap_or(-1);
+    let code = output.status.code().map(i64::from).unwrap_or(-1);
+    if !output.status.success() && code != RED_SUITE {
         bail!(
-            "angelo needs a green baseline, but pytest exited {code}.\n{}\n\n{}",
+            "angelo could not run the baseline suite, pytest exited {code}.\n{}\n\n{}",
             diagnose_baseline(code),
             tail(&String::from_utf8_lossy(&output.stdout), 40)
         );
@@ -184,13 +191,14 @@ pub fn run_baseline(
     Ok((elapsed, parse_testcases(&xml)?))
 }
 
-/// Exit 1 means the suite is genuinely red. Everything else means pytest never
-/// got as far as judging the code, which is usually a missing dependency.
+/// pytest's exit code for "the suite ran and some of it failed", as opposed to
+/// the 2-5 range, where the suite never ran at all.
+const RED_SUITE: i64 = 1;
+
+/// Why pytest never judged the code. Exit 1 is absent on purpose: a red suite
+/// is a supported starting point now, not a diagnosis.
 fn diagnose_baseline(code: i64) -> &'static str {
     match code {
-        1 => {
-            "Tests are failing. Fix them first, angelo can only tell you what a passing suite misses."
-        }
         2 => "pytest was interrupted.",
         3 => {
             "pytest hit an internal error, usually a plugin or config problem: an option in \
@@ -349,8 +357,7 @@ mod tests {
     }
 
     #[test]
-    fn a_red_baseline_is_diagnosed_by_exit_code() {
-        assert!(diagnose_baseline(1).contains("Tests are failing"));
+    fn a_baseline_that_never_ran_is_diagnosed_by_exit_code() {
         assert!(diagnose_baseline(3).contains("plugin"));
         assert!(diagnose_baseline(5).contains("collected no tests"));
     }
