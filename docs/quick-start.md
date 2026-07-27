@@ -2,6 +2,42 @@
 
 This page takes you from nothing to a mutation score, then explains how to read it.
 
+## Install it
+
+Angelo ships as a wheel, so `pip` is the way in. Real PyPI is still to come; releases go to
+**TestPyPI** while the publishing pipeline is being proven.
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ angelo
+```
+
+The wheel holds a compiled binary and no Python at all. `pip` puts `angelo` on your PATH,
+nothing imports it, and it does not care which interpreter installed it — so a global
+install works on every project on the machine.
+
+| Platform | Wheel |
+| --- | --- |
+| Windows x86-64 | yes |
+| Linux x86-64 | yes, manylinux |
+| macOS Apple Silicon | yes |
+| Anything else | build from source |
+
+Building from source needs a Rust toolchain and nothing else:
+
+```bash
+git clone https://github.com/kvandeh/angelo.git
+cd angelo
+cargo build --release   # target/release/angelo
+```
+
+!!! warning "TestPyPI is a sandbox, not a mirror"
+    That flag points pip at TestPyPI **instead of** PyPI, so anything else in the same
+    command fails to resolve. Install Angelo on its own, or keep PyPI in the search:
+
+    ```bash
+    pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ angelo
+    ```
+
 ## Before you begin
 
 Angelo drives your existing suite, so it needs three things:

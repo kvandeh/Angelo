@@ -342,10 +342,27 @@ enumeration, so `.angelo/` has to be deleted before the scope can widen again. A
 prints no score at all: zero mutants is zero information, not a pass.
 
 **Name.** Angelo, renamed from magneto on 2026-07-26. `angelo` on crates.io is free; on
-PyPI it is a dead 2021 turtle-graphics toy with one release. The PyPI suffix gets settled
-at publish time, not before.
+PyPI it is a dead 2021 turtle-graphics toy with one release. On **TestPyPI** the plain name
+is free, so the playground publishes as `angelo` and the real PyPI suffix still gets
+settled at publish time, not before.
 
-**Roadmap.** More operators, maturin wiring, conda.
+**Packaging.** `pyproject.toml`, maturin with `bindings = "bin"`. The wheel carries
+`angelo.exe` in its scripts directory and no Python whatsoever, so the tag is
+`py3-none-<platform>` and the interpreter that installed it is irrelevant. The version is
+`dynamic` and read from Cargo.toml, which stays the one place a release number lives.
+Wheels only, no sdist: an sdist would make an unsupported platform quietly compile Rust
+for five minutes instead of saying it has no wheel. PyPI metadata lives in
+`pyproject.toml`, not in Cargo.toml, so the two files do not compete.
+
+**Publishing.** TestPyPI, over OIDC **trusted publishing**, so no token exists in the
+repository at all. The match is on three names together — repository, workflow file name,
+environment — and renaming `testpypi.yml` breaks the upload until the publisher on
+TestPyPI is renamed to match. `workflow_dispatch` only: `release.yml` cuts its GitHub
+Release with the default `GITHUB_TOKEN`, and an event raised by that token never starts
+another workflow, so `on: release` would sit silent while looking wired up. No
+`skip-existing`; a version TestPyPI already holds should fail loudly and be bumped.
+
+**Roadmap.** More operators, aarch64 and Intel-macOS wheels, real PyPI, conda.
 
 ## Where the code lives
 
@@ -366,6 +383,7 @@ Flat modules with one nested directory, the same shape as cargo-mutants.
 | `src/db.rs` + `src/db/schema.sql` | turso, the only async file, and the schema |
 | `src/report.rs` | `Progress` (live lines) and `Summary` (scoring, unit-tested) |
 | `tests/end_to_end.rs` | the real binary against throwaway Python projects |
+| `pyproject.toml` | maturin's wheel recipe and the PyPI metadata |
 | `demo/` | a pytest project for manual runs |
 
 ## Write documentation in the project's register
@@ -385,13 +403,14 @@ reads as clear.
 - Report the disappointing measurements too. The benchmarks page records where the
   optimisations bought nothing, and that is the reason to trust the rest of it.
 
-## Three workflows, and no more
+## Four workflows, and no more
 
 | Workflow | Runs |
 | --- | --- |
 | **lint-and-test** | lint on every push; tests and the verdict matrix on a pull request or on master/main/develop, ubuntu and windows |
 | **docs** | on push to master: builds and deploys to Pages |
 | **release** | on push to master: version from Cargo.toml, skipped if the tag exists, ships `angelo.exe` and `src.zip`, body is the merge commit message |
+| **testpypi** | manual only: builds a wheel per platform with maturin and uploads it to TestPyPI over OIDC |
 
 `scripts/bench-repo.sh` stays a local tool and has no workflow.
 
