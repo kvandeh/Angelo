@@ -18,8 +18,14 @@ impl Project {
         Project { root }
     }
 
+    /// `name` may be nested, so a test can build the directory an exclude
+    /// pattern is meant to prune.
     fn write(self, name: &str, contents: &str) -> Project {
-        fs::write(self.root.join(name), contents).expect("writing a test file");
+        let path = self.root.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("creating a test directory");
+        }
+        fs::write(path, contents).expect("writing a test file");
         self
     }
 
@@ -394,6 +400,45 @@ fn sampling_caps_the_pool_and_says_so() {
     assert!(stdout.contains("dropped at random"), "{stdout}");
     assert!(stdout.contains("ESTIMATE"), "{stdout}");
     assert!(stdout.contains("4 mutants pending"), "{stdout}");
+}
+
+#[test]
+fn exclude_prunes_a_directory_and_reports_the_count() {
+    let project = calculator_project("exclude")
+        .write("generated/client.py", CALCULATOR)
+        .write(
+            "angelo.conf",
+            "paths = [\".\"]\nexclude = [\"**/generated/**\", \"typo/*.py\"]\n",
+        );
+
+    let stdout = project.angelo(&["exec", "--init-only"]).expect_success();
+
+    assert!(stdout.contains("across 1 files"), "{stdout}");
+    assert!(
+        stdout.contains("1 path excluded by angelo.conf"),
+        "{stdout}"
+    );
+    // A typo in an exclude is invisible otherwise: it silently raises the score.
+    assert!(stdout.contains("\"typo/*.py\" matched nothing"), "{stdout}");
+}
+
+#[test]
+fn excluding_everything_blames_exclude_and_not_paths() {
+    let project = calculator_project("exclude-all")
+        .write("angelo.conf", "paths = [\".\"]\nexclude = [\"*.py\"]\n");
+
+    let stderr = project.angelo(&["exec", "--init-only"]).expect_failure();
+    assert!(stderr.contains("was excluded by"), "{stderr}");
+}
+
+#[test]
+fn no_exclude_leaves_the_message_alone() {
+    let project = calculator_project("exclude-none").write("generated/client.py", CALCULATOR);
+
+    let stdout = project.angelo(&["exec", "--init-only"]).expect_success();
+
+    assert!(stdout.contains("across 2 files"), "{stdout}");
+    assert!(!stdout.contains("excluded"), "{stdout}");
 }
 
 #[test]
