@@ -317,8 +317,40 @@ with junit XML and killed on timeout. `std::thread::scope` with an `AtomicUsize`
 and an mpsc channel; the main thread owns every database write.
 
 **Statuses.** `killed` (exit 1), `survived` (exit 0), `timeout`, `error` (any other exit,
-including 5, nothing collected). Score is `(killed + timeout) / (killed + timeout +
-survived)`.
+including 5, nothing collected), `untestable` (no run could judge it fairly). Score is
+`(killed + timeout) / (killed + timeout + survived)`, so `error` and `untestable` sit
+outside it. `STATUSES` in `mutate.rs` is the one list `parse` and its test both read.
+
+**Red baselines.** A red baseline warns and keeps going. Exit 1 means pytest judged the
+code and some of it failed, which is a normal state for a real suite; exits 2 to 5 mean it
+never judged anything, so there is no duration to measure and no junit report to read, and
+those still bail. The reason the old rule existed is kept: an already-failing test fails
+again under a mutant, pytest exits 1, and exit 1 is `killed`. So a mutant is judgeable only
+when `Coverage::gets_a_fair_trial` says its selection can name its own tests and avoid
+every already-red node id. The rest are `untestable`. This **needs coverage and
+`test_selection`** — without them every run is the whole red suite and every mutant scores
+`killed`, so that combination bails with a message naming the missing piece rather than the
+failing tests. Untested mutants are split off *first*, because a mutant no test executes
+survives without a run whether the baseline is green or red.
+
+**Progress.** Over 1000 mutants, or with `show_loading = true`, the line-per-mutant output
+collapses into one `\r`-redrawn bar. No dependency: a progress-bar crate buys nothing over
+a carriage return. `error` lines still print on their own line and the bar redraws
+underneath, because a broken test command is the loudest thing this tool has to say. The
+remaining-time estimate is a linear extrapolation and says `~`, since batching settles
+mutants in clumps and a red batch bisects into more runs. `bar_line` is pure and
+unit-tested; the drawing is not.
+
+**Allocation.** Four hot spots were fixed and two famous suggestions were rejected. Fixed:
+`Lines` in `mutate.rs` carries a cursor, so a file is scanned once rather than once per
+mutant; `Coverage::build` looks a file up once per row, not once per covered line;
+`Coverage::covering` borrows the covering set, and only `batch.rs` clones one;
+`Mutant::splice_into` uses `String::replace_range` rather than rebuilding the whole file
+once per batch member. Rejected: **rayon**, because `TestRunner::run_all` already fans out
+with `std::thread::scope` and the work is a subprocess, not arithmetic; **`swap_remove`**,
+because there is no order-preserving `Vec::remove` anywhere to apply it to. Measured, and
+the number is small on purpose: see
+[benchmarks](docs/05-benchmarks.md#the-allocation-pass).
 
 **Sampling.** `--sample N`, or `sample` in config. It **deletes the overflow rows**,
 because the sample *is* the study: the score is an estimate over a random draw from the
@@ -364,7 +396,7 @@ Flat modules with one nested directory, the same shape as cargo-mutants.
 | `src/runner.rs` | `TestRunner` spawns a `Worker` per thread; `WorkerCopy`, `PatchedFiles`, `WarmWorker` |
 | `src/warm.rs` + `src/runner/worker.py` | the long-lived pytest host and its driver |
 | `src/db.rs` + `src/db/schema.sql` | turso, the only async file, and the schema |
-| `src/report.rs` | `Progress` (live lines) and `Summary` (scoring, unit-tested) |
+| `src/report.rs` | `Progress` (live lines or one redrawn bar) and `Summary` (scoring, unit-tested) |
 | `tests/end_to_end.rs` | the real binary against throwaway Python projects |
 | `demo/` | a pytest project for manual runs |
 
