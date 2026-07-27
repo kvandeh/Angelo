@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::io::{self, Write};
+use std::env;
+use std::io::{self, IsTerminal, Write};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use crate::mutate::{Mutant, Status};
@@ -12,6 +14,69 @@ const BAR_ABOVE: usize = 1000;
 /// Characters of bar, chosen to leave room for the counts on an 80-column
 /// terminal.
 const BAR_WIDTH: usize = 36;
+
+/// How a verdict reads on screen. Hand-rolled ANSI: four escape codes are less
+/// than a dependency costs, and `IsTerminal` has been in the standard library
+/// since 1.70.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Paint {
+    Green,
+    Yellow,
+    Red,
+    Dim,
+    Bold,
+}
+
+impl Paint {
+    /// The colour a settled mutant reads in. Detected is the good outcome, a
+    /// survivor is the finding, an error is the one that invalidates a score,
+    /// and an untestable mutant is a note rather than a result.
+    fn of(status: Status) -> Paint {
+        match status {
+            Status::Killed | Status::Timeout => Paint::Green,
+            Status::Survived => Paint::Yellow,
+            Status::Error => Paint::Red,
+            Status::Untestable => Paint::Dim,
+        }
+    }
+
+    fn code(self) -> &'static str {
+        match self {
+            Paint::Green => "\x1b[32m",
+            Paint::Yellow => "\x1b[33m",
+            Paint::Red => "\x1b[31m",
+            Paint::Dim => "\x1b[2m",
+            Paint::Bold => "\x1b[1m",
+        }
+    }
+
+    /// The text in this colour, or exactly the text when colour is off.
+    fn on(self, text: &str) -> String {
+        match colour_is_on() {
+            true => format!("{}{text}\x1b[0m", self.code()),
+            false => text.to_string(),
+        }
+    }
+}
+
+/// Colour goes to a terminal and nowhere else. `verdict-matrix.sh` greps these
+/// very lines, and so does anyone piping a run into `grep`, so a redirected run
+/// has to stay byte-for-byte what it was before colour existed.
+fn colour_wanted(is_terminal: bool, no_color_set: bool) -> bool {
+    is_terminal && !no_color_set
+}
+
+fn colour_is_on() -> bool {
+    // Asked once: `is_terminal` is a syscall and a survivor list can be long.
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        // NO_COLOR counts when it is set to anything at all, empty included.
+        colour_wanted(
+            io::stdout().is_terminal(),
+            env::var_os("NO_COLOR").is_some(),
+        )
+    })
+}
 
 /// Owns the live progress: one line per settled mutant, or one redrawn bar.
 pub struct Progress {
@@ -69,7 +134,7 @@ impl Progress {
                 "[{}/{}] {label}  {}{batch_note}  ({seconds:.1}s)",
                 self.done,
                 self.total,
-                status.as_str()
+                Paint::of(*status).on(status.as_str())
             );
         }
         if let Some(error) = &outcome.error {
@@ -101,9 +166,11 @@ impl Progress {
             self.survived,
             started.elapsed(),
         );
-        print!("\r{line}");
-        let _ = io::stdout().flush();
+        // Measured before it is painted: `erase` wipes character by character,
+        // and escape codes take up none of the width they would be counted for.
         self.drawn = line.chars().count();
+        print!("\r{}", painted(&line));
+        let _ = io::stdout().flush();
     }
 
     fn erase(&mut self) {
@@ -132,6 +199,20 @@ fn bar_line(
         "-".repeat(BAR_WIDTH - filled),
         100 * done.min(total) / total,
         remaining(done, total, elapsed)
+    )
+}
+
+/// The bar's filled run in green. The line is built plain and painted after,
+/// so `bar_line` stays a pure string its unit test can measure.
+fn painted(line: &str) -> String {
+    let (Some(start), Some(end)) = (line.find('#'), line.rfind('#')) else {
+        return line.to_string();
+    };
+    format!(
+        "{}{}{}",
+        &line[..start],
+        Paint::Green.on(&line[start..=end]),
+        &line[end + 1..]
     )
 }
 
@@ -203,22 +284,44 @@ impl Summary {
 pub fn print_summary(counts: &[(String, i64)], survivors: &[Mutant]) {
     let summary = Summary::of(counts);
 
+    // Survivors first, report last. A real codebase produces hundreds of
+    // survivors, and the score is the number the reader ran the command for.
+    // Printing it above the list means scrolling back for it.
+    if !survivors.is_empty() {
+        println!();
+        println!("survivors (changes your tests never noticed):");
+        for mutant in survivors {
+            println!("  {mutant}");
+        }
+    }
+
     println!();
     println!("=== mutation report ===");
     for (status, count) in counts {
-        println!("{status:>10}: {count}");
+        // Padded before it is painted, so the column does not count escapes.
+        let label = format!("{status:>10}");
+        match Status::parse(status) {
+            Some(status) => println!("{}: {count}", Paint::of(status).on(&label)),
+            None => println!("{label}: {count}"),
+        }
     }
     if let Some(score) = summary.score() {
         println!(
-            "     score: {score:.1}% ({}/{} detected)",
-            summary.detected(),
-            summary.scored()
+            "{}",
+            Paint::Bold.on(&format!(
+                "     score: {score:.1}% ({}/{} detected)",
+                summary.detected(),
+                summary.scored()
+            ))
         );
     }
     if summary.error > 0 {
         println!(
-            "note: {} error mutants sit outside the score, a broken test command also looks like this, so check one before trusting the numbers",
-            summary.error
+            "{}",
+            Paint::Red.on(&format!(
+                "note: {} error mutants sit outside the score, a broken test command also looks like this, so check one before trusting the numbers",
+                summary.error
+            ))
         );
     }
     if summary.untestable > 0 {
@@ -232,15 +335,6 @@ pub fn print_summary(counts: &[(String, i64)], survivors: &[Mutant]) {
             "note: {} mutants still pending, re-run `angelo exec` to resume",
             summary.pending
         );
-    }
-
-    if survivors.is_empty() {
-        return;
-    }
-    println!();
-    println!("survivors (changes your tests never noticed):");
-    for mutant in survivors {
-        println!("  {mutant}");
     }
 }
 
@@ -323,6 +417,43 @@ mod tests {
     fn the_estimate_extrapolates_from_what_is_done() {
         assert_eq!(remaining(250, 1000, Duration::from_secs(30)), "1m30s");
         assert_eq!(remaining(0, 1000, Duration::from_secs(30)), "--");
+    }
+
+    /// The decision, not the escape codes. A redirected run is what CI reads
+    /// and what `verdict-matrix.sh` greps, so it has to come out plain.
+    #[test]
+    fn colour_only_goes_to_a_terminal() {
+        assert!(colour_wanted(true, false));
+        assert!(!colour_wanted(false, false), "a redirected run stays plain");
+        assert!(!colour_wanted(true, true), "NO_COLOR beats a terminal");
+        assert!(!colour_wanted(false, true));
+    }
+
+    #[test]
+    fn every_status_reads_in_its_own_colour() {
+        assert_eq!(Paint::of(Status::Killed), Paint::Green);
+        assert_eq!(Paint::of(Status::Timeout), Paint::Green);
+        assert_eq!(Paint::of(Status::Survived), Paint::Yellow);
+        assert_eq!(Paint::of(Status::Error), Paint::Red);
+        assert_eq!(Paint::of(Status::Untestable), Paint::Dim);
+    }
+
+    /// Painting the bar must not change what `erase` has to wipe, so with
+    /// colour off the line comes back identical rather than merely similar.
+    #[test]
+    fn painting_an_uncoloured_bar_changes_nothing() {
+        let line = bar_line(250, 1000, 200, 50, Duration::from_secs(30));
+        assert_eq!(painted(&line).len(), line.len() + escape_width(&line));
+    }
+
+    /// Under `cargo test` stdout is captured, so colour is normally off; run
+    /// with `--nocapture` from a terminal and it is on. The test has to hold
+    /// either way, so it asks how wide the escapes are rather than assuming.
+    fn escape_width(line: &str) -> usize {
+        match colour_is_on() && line.contains('#') {
+            true => Paint::Green.code().len() + "\x1b[0m".len(),
+            false => 0,
+        }
     }
 
     #[test]

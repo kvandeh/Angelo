@@ -341,6 +341,18 @@ remaining-time estimate is a linear extrapolation and says `~`, since batching s
 mutants in clumps and a red batch bisects into more runs. `bar_line` is pure and
 unit-tested; the drawing is not.
 
+**Output.** The survivor list prints **above** the report, so the score is the last line
+on screen rather than five hundred survivors up. Verdicts carry colour through `Paint` in
+`report.rs`: detected green, survived yellow, error red, untestable dim, the score bold,
+the bar's filled run green. Hand-rolled ANSI, because `std::io::IsTerminal` makes the
+check free and four escape codes are cheaper than a dependency. **Colour reaches a
+terminal and nothing else** — `colour_wanted` is off when stdout is redirected or
+`NO_COLOR` is set to any value, empty included, because `verdict-matrix.sh` greps those
+very lines and so does anyone piping a run into `grep`. The decision is unit-tested; the
+escape codes are not. Two things that bite: a label is padded *before* it is painted, or
+the column counts escapes, and the bar is measured before it is painted, or `erase`
+overruns the line.
+
 **Allocation.** Four hot spots were fixed and two famous suggestions were rejected. Fixed:
 `Lines` in `mutate.rs` carries a cursor, so a file is scanned once rather than once per
 mutant; `Coverage::build` looks a file up once per row, not once per covered line;

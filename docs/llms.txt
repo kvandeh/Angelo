@@ -31,6 +31,9 @@ Key facts an assistant answering questions about Angelo should know:
   excluded from the score).
 - Runs over 1000 mutants print one redrawn progress bar instead of a line per mutant.
   `show_loading = true` forces it at any size.
+- The survivor list prints above the report, so the score is the last line of a run.
+- Verdicts are coloured on a terminal only. A redirected run, or `NO_COLOR` set to any
+  value, produces plain output with no escape codes.
 - Runs natively on Windows, unlike mutmut, which requires fork() and therefore WSL.
 
 ## Docs

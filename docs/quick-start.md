@@ -34,21 +34,26 @@ baseline green in 1.2s, timeout 7.4s for a whole-suite run, from its own tests f
 9 mutants sit on lines no test executes, survived without a single run
 running 17 batches on 8 workers, covering tests only
 
-   killed: 46
- survived: 28
-    score: 62.2% (46/74 detected)
-
 survivors (changes your tests never noticed):
   calculator.py:31 >= -> >
   calculator.py:35 and -> or
   text.py:22 lower -> upper
+
+=== mutation report ===
+    killed: 46
+  survived: 28
+     score: 62.2% (46/74 detected)
 ```
 
-Four things worth noticing.
+Five things worth noticing.
 
 **The survivors list is the point.** Each line is a change you can make to your code
 without any test objecting. `calculator.py:31 >= -> >` says the boundary at that
 comparison is untested.
+
+**The report comes last on purpose.** A real codebase produces hundreds of survivors, and
+the score is the number you ran the command for. Printed above the list it would scroll off
+the top; printed below it, it is the last line on screen.
 
 **Nine mutants never ran.** No test executes those lines, so no test could possibly kill
 them. Angelo marks them survived immediately rather than wasting a run.
@@ -57,6 +62,11 @@ them. Angelo marks them survived immediately rather than wasting a run.
 
 **A score of 62 percent is normal.** Real projects commonly land between 50 and 80. A
 score of 100 usually means too few mutants, not perfect tests.
+
+Verdicts are **coloured on a terminal**: detected green, survived yellow, error red,
+untestable dim. Redirect the output, or set `NO_COLOR` to anything at all, and it comes
+back byte for byte plain, because a log full of escape codes helps nobody and `grep` least
+of all.
 
 ## Statuses
 
