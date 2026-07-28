@@ -153,7 +153,14 @@ impl Sources {
     }
 }
 
+/// `paths` may name one module as readily as a directory.
 fn collect_python_files(dir: &Path, sources: &mut Sources) -> Result<()> {
+    if dir.is_file() {
+        if is_mutation_target(dir) && !sources.excludes.excludes(dir) {
+            sources.files.push(dir.to_path_buf());
+        }
+        return Ok(());
+    }
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry
             .with_context(|| format!("reading an entry of {}", dir.display()))?
@@ -319,6 +326,33 @@ mod tests {
         assert!(!is_mutation_target(Path::new("src/calculator_test.py")));
         assert!(!is_mutation_target(Path::new("src/conftest.py")));
         assert!(!is_mutation_target(Path::new("src/notes.txt")));
+    }
+
+    /// Naming one module used to fail with "Not a directory (os error 20)".
+    #[test]
+    fn paths_may_name_a_single_file() {
+        let root = std::env::temp_dir().join(format!("angelo-cfg-{}", std::process::id()));
+        let package = root.join("pkg");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("mod.py"), "x = 1\n").unwrap();
+        fs::write(package.join("test_mod.py"), "def test(): pass\n").unwrap();
+
+        let mut sources = Sources {
+            files: Vec::new(),
+            excludes: Excludes::new(&[]),
+        };
+        collect_python_files(&package.join("mod.py"), &mut sources).unwrap();
+        assert_eq!(sources.files, [package.join("mod.py")]);
+
+        // A test file named directly is still not a mutation target.
+        let mut sources = Sources {
+            files: Vec::new(),
+            excludes: Excludes::new(&[]),
+        };
+        collect_python_files(&package.join("test_mod.py"), &mut sources).unwrap();
+        assert!(sources.files.is_empty());
+
+        fs::remove_dir_all(&root).ok();
     }
 
     #[test]

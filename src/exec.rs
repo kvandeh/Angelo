@@ -65,7 +65,7 @@ pub fn run(options: Options) -> Result<ExitCode> {
     let coverage = baseline.coverage.as_ref();
     if coverage.is_none() {
         println!(
-            "no per-test coverage (needs `pip install coverage` and the default pytest command), no batching, no test selection"
+            "no per-test coverage (needs `pip install coverage` and a `python -m pytest` test command), no batching, no test selection"
         );
     }
     let budget = Budget::new(baseline.duration, config.timeout_factor);
@@ -83,6 +83,13 @@ pub fn run(options: Options) -> Result<ExitCode> {
             "{} mutants sit on lines no test executes, survived without a single run",
             untested.len()
         );
+        if coverage.is_some() && testable.is_empty() {
+            eprintln!(
+                "warning: per-test coverage was collected but matched no mutant at all, so every \
+                 mutant survived without a run and the score below measures nothing. Check that \
+                 `paths` names the same code the suite imports."
+            );
+        }
     }
 
     let (testable, untestable) = split_untestable(testable, &baseline, config.test_selection)?;
@@ -250,7 +257,7 @@ fn split_untestable(
         bail!(
             "the baseline suite is red ({failing} tests already failing) and angelo cannot work \
              around that here.\nSkipping the mutants those tests cover needs per-test coverage \
-             and test selection: `pip install coverage`, keep the default `python -m pytest` \
+             and test selection: `pip install coverage`, keep a `python -m pytest` \
              test_command, and leave test_selection = true in {}.\nOtherwise every run executes \
              the whole red suite, exits 1, and every mutant is scored killed.",
             config::CONFIG_FILE

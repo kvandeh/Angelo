@@ -297,7 +297,7 @@ wrapped in coverage.py (`dynamic_context = test_function`, rcfile and data file 
 ImportOnly (runs alone) or Untested (survives with no run at all, `execution_id NULL`). A
 red batch attributes directly: a failed test kills the one member it covers. Anything
 unattributable — a timeout, a crash, a failure no member explains — bisects. With no
-coverage installed, or a non-default test command, batches are size 1 and everything still
+coverage installed, or a test command that is not `python -m pytest`, batches are size 1 and everything still
 works. First-fit composer in `batch.rs`, `batch_size` in config, default 8.
 
 **Test selection.** A run executes only the pytest node ids covering its batch, and a

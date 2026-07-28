@@ -19,6 +19,9 @@ pub struct Database {
 }
 
 impl Database {
+    /// A half-written database opens fine and takes the schema, then fails on
+    /// the first query that walks a damaged page, so `open` probes before the
+    /// caller commits to a run.
     pub fn open(directory: &Path) -> Result<Self> {
         fs::create_dir_all(directory)
             .with_context(|| format!("creating {}", directory.display()))?;
@@ -34,10 +37,18 @@ impl Database {
             .block_on(connection.execute_batch(SCHEMA))
             .context("creating the schema")?;
 
-        Ok(Database {
+        let database = Database {
             runtime,
             connection,
-        })
+        };
+        database.mutant_count().map_err(|error| {
+            error.context(format!(
+                "reading {path}, which is damaged — most likely an interrupted \
+                 run left it half-written. Delete {} and run again.",
+                directory.display()
+            ))
+        })?;
+        Ok(database)
     }
 
     pub fn mutant_count(&self) -> Result<i64> {

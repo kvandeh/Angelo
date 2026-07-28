@@ -323,7 +323,7 @@ test failures are exit code 1, and those only warn.
 
 **"The baseline suite is red and Angelo cannot work around that here."** Your suite has
 failing tests *and* no way to route around them. Install `coverage`, keep the default
-`python -m pytest` test command, and leave `test_selection = true`.
+`python -m pytest` test command (a virtualenv's own interpreter counts), and leave `test_selection = true`.
 
 **Every mutant is `error`.** Your test command is probably wrong. Run it by hand first.
 
