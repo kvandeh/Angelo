@@ -211,7 +211,17 @@ because of this bug.
 bash scripts/verdict-matrix.sh          # the correctness gate, runs in CI
 bash scripts/setup-extra.sh             # a virtualenv per repository in extra/
 bash scripts/bench-repo.sh extra/click  # the feature matrix on a real project
+
+pip install -r scripts/requirements-bench.txt
+python scripts/benchmark.py --root extra --angelo target/release/angelo
 ```
+
+`scripts/benchmark.py` is the three-tool comparison: it writes `bench-results.md`,
+`bench-results.json` and `bench-results.png` in one command. `--tools` skips a tool,
+`--repeats` and `--warmup` trade time for a median rather than a single run.
+
+**mutmut needs `fork()`, so that script is Linux and macOS only.** On Windows it exits
+rather than print half a table.
 
 `extra/` holds gitignored shallow clones of click, flask, httpx, requests, fastapi and
 django.
