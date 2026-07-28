@@ -239,7 +239,13 @@ impl Excludes {
         // Match one path form only: forward slashes, relative to the project
         // root, the same shape `Mutant::coverage_file` produces. A `./` prefix
         // and a Windows backslash must not change the answer.
-        let relative = forward_slashed(&path.strip_prefix(".").unwrap_or(path).to_string_lossy());
+        //
+        // Both are stripped from the normalised string rather than the `Path`,
+        // because a backslash is not a separator off Windows: `strip_prefix(".")`
+        // leaves `.\src\x.py` whole there, and the leading `.` then survives as
+        // its own segment and matches nothing.
+        let forward = forward_slashed(&path.to_string_lossy());
+        let relative = forward.strip_prefix("./").unwrap_or(&forward);
         let segments: Vec<&str> = relative.split('/').collect();
         let Some(pattern) = self
             .patterns
