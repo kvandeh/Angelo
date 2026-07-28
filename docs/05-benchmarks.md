@@ -142,6 +142,8 @@ over its own pool and are printed side by side, never subtracted.
 **Angelo is 2.0x to 4.4x faster per mutant than cosmic-ray**, and level with mutmut on the
 one repository where mutmut runs at all.
 
+![Seconds per mutant, by tool and repository](img/bench-results.png)
+
 ### What the other two did
 
 **cosmic-ray runs serially.** `worker-count = 12` under its `local` distributor produced
