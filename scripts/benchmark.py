@@ -244,23 +244,34 @@ def run_mutmut(repo: Repo, workers: int, timeout: float) -> Run:
     if code == 124:
         result.note = f"timed out after {timeout:.0f}s"
         return result
-    _, results, _ = shell([str(mutmut), "results"], repo.path, 120)
-    text = output + results
-    for label, attribute in (
-        ("killed", "killed"),
-        ("survived", "survived"),
-        ("timeout", "killed"),
-        ("suspicious", "errored"),
-        ("skipped", "errored"),
-    ):
-        for found in re.finditer(rf"{label}[^0-9\n]*?(\d+)", text, re.IGNORECASE):
-            setattr(result, attribute, getattr(result, attribute) + int(found.group(1)))
-            break
+    with restored(repo.path / "setup.cfg", settings):
+        _, results, _ = shell([str(mutmut), "results"], repo.path, 120)
+    unchecked = 0
+    for line in results.splitlines():
+        if ":" not in line:
+            continue
+        status = line.rsplit(":", 1)[1].strip().lower()
+        if status in ("killed", "timeout"):
+            result.killed += 1
+        elif status in ("survived", "no tests"):
+            # "no tests" is mutmut's untested, which angelo also scores as survived.
+            result.survived += 1
+        elif status in ("suspicious", "skipped", "caught by type check"):
+            result.errored += 1
+        elif status == "not checked":
+            unchecked += 1
     result.mutants = result.killed + result.survived + result.errored
     if not result.mutants:
-        result.note = f"no mutants reported (exit {code}): {tail(text)}"
+        reason = (
+            f"{unchecked} mutants generated, none run"
+            if unchecked
+            else f"no mutants reported (exit {code})"
+        )
+        result.note = f"{reason}: {tail(output)}"
         return result
     result.seconds = seconds
+    if unchecked:
+        result.note = f"{unchecked} of {result.mutants + unchecked} mutants never ran"
     return result
 
 
@@ -328,8 +339,15 @@ def read_session(session: Path) -> tuple[int, int, int, int, int]:
         return 0, 0, 0, 0, 0
     finally:
         connection.close()
-    killed = outcomes.get("killed", 0)
-    survived = outcomes.get("survived", 0)
+    killed = survived = 0
+    for label, count in outcomes.items():
+        # Recorded as the enum rather than its value on some versions, so this
+        # matches "killed", "KILLED" and "TestOutcome.KILLED" alike.
+        name = str(label).lower()
+        if "killed" in name:
+            killed += count
+        elif "survived" in name:
+            survived += count
     done = sum(outcomes.values())
     return total, done, killed, survived, done - killed - survived
 
@@ -425,8 +443,10 @@ def write_chart(runs: list[Run], path: Path) -> None:
     for y, value, repo, row in bars:
         axes.barh(y, value, height=0.75, color=colours[repo], zorder=3)
         if row is None or row.per_mutant is None:
-            note = row.note if row and row.note else "no result"
-            axes.text(widest * 0.01, y, f"  {note}", va="center", fontsize=8,
+            # The full note belongs in the table; a bar chart only has room for
+            # the headline, and a long one stretches the whole figure.
+            note = (row.note if row and row.note else "no result").split(":")[0]
+            axes.text(widest * 0.01, y, f"  {note[:46]}", va="center", fontsize=8,
                       color="#B03030", zorder=4)
             continue
         score = f"{row.score:.0f}%" if row.score is not None else "n/a"
@@ -436,6 +456,7 @@ def write_chart(runs: list[Run], path: Path) -> None:
 
     axes.set_yticks(ticks)
     axes.set_yticklabels(labels, fontsize=9)
+    axes.tick_params(axis="y", length=0, pad=6)
     axes.invert_yaxis()
     axes.set_xlabel("Seconds per mutant (lower is faster)", fontsize=10)
     axes.set_xlim(0, widest * 1.38)
@@ -450,11 +471,11 @@ def write_chart(runs: list[Run], path: Path) -> None:
 
     for index, tool in enumerate(TOOLS):
         middle = index * (len(repos) + 0.9) + (len(repos) - 1) / 2
-        axes.text(-widest * 0.085, middle, tool, ha="center", va="center",
+        axes.text(-widest * 0.175, middle, tool, ha="center", va="center",
                   fontsize=11, fontweight="bold", rotation=90)
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=colours[r]) for r in repos]
-    axes.legend(handles, repos, title="repository", loc="lower right",
+    axes.legend(handles, repos, title="repository", loc="upper right",
                 frameon=False, fontsize=9, title_fontsize=9)
     fig.text(0.5, 0.925,
              "Percentages are each tool's own kill rate over its own pool — "

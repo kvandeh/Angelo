@@ -123,6 +123,46 @@ machine out of the box, which used to stop Angelo outright. A
 mutants those tests cover come back `untestable`, so flask is measurable — it simply has
 not been measured yet.
 
+## Against mutmut and cosmic-ray
+
+WSL Ubuntu, 16 cores, Python 3.12, twelve workers. Each tool mutates **one module** and
+runs **the same tests**, in the repository's own virtualenv, so the job is identical.
+Produced by `scripts/benchmark.py`.
+
+**Per-mutant seconds is the only column compared.** The operator sets differ, so the pools
+differ, so wall time compares two different jobs. The scores are each tool's own kill rate
+over its own pool and are printed side by side, never subtracted.
+
+| Repository | Module | Angelo | mutmut | cosmic-ray |
+| --- | --- | ---: | ---: | ---: |
+| fastapi | `fastapi/security/api_key.py` | **0.827 s** | did not run | 1.677 s |
+| thefuck | `thefuck/types.py` | **0.117 s** | did not run | 0.510 s |
+| graphify | `graphify/cluster.py` | **0.087 s** | 0.080 s | 0.535 s |
+
+**Angelo is 2.0x to 4.4x faster per mutant than cosmic-ray**, and level with mutmut on the
+one repository where mutmut runs at all.
+
+### What the other two did
+
+**cosmic-ray runs serially.** `worker-count = 12` under its `local` distributor produced
+one pytest process at a time throughout. That is most of the gap above, and it means the
+column measures cosmic-ray's default rather than its ceiling. Its fastapi row is a
+**timeout**: 179 of 183 mutants inside a 300 second budget, counted from its own session
+database rather than dropped.
+
+**mutmut ran on one repository of three.** On fastapi and thefuck it generates its mutants
+and then stops on its own sanity check — `Unable to force test failures` — without running
+any of them. A control run on **markupsafe** finishes 314 mutants in 5.9 s, so this is
+mutmut meeting these repositories rather than the harness misconfiguring it. Both are
+recorded rather than omitted: **a tool that produces no verdicts must not look fast.**
+
+### What this does not prove
+
+- One module per repository, not a whole codebase. A different module moves every number.
+- Single runs. `benchmark.py --repeats 3 --warmup` gives a median and was not used here.
+- mutmut's graphify score is 0.4% against Angelo's 29.0% on the same module. That is two
+  different pools, not a quality comparison, and it is exactly why the rule above exists.
+
 ## The allocation pass
 
 Angelo's own Rust had never been read for allocation. Four patterns were fixed: a line
@@ -217,8 +257,12 @@ python scripts/benchmark.py --root extra --angelo target/release/angelo
 ```
 
 `scripts/benchmark.py` is the three-tool comparison: it writes `bench-results.md`,
-`bench-results.json` and `bench-results.png` in one command. `--tools` skips a tool,
-`--repeats` and `--warmup` trade time for a median rather than a single run.
+`bench-results.json` and `bench-results.png` in one command.
+
+```bash
+python scripts/benchmark.py --tools angelo,cosmic-ray   # skip a tool
+python scripts/benchmark.py --repeats 3 --warmup        # median of three
+```
 
 **mutmut needs `fork()`, so that script is Linux and macOS only.** On Windows it exits
 rather than print half a table.
