@@ -61,7 +61,7 @@ pub fn baseline(
     let data_file = angelo_dir.join("coverage.db");
 
     let wrapped = coverage_command(test_command, &rcfile);
-    let Some(wrapped) = wrapped.filter(|_| coverage_is_installed()) else {
+    let Some(wrapped) = wrapped.filter(|command| coverage_is_installed(&command[0])) else {
         let (duration, testcases) = pytest::run_baseline(project_root, test_command, &junit)?;
         return Ok(Baseline {
             duration,
@@ -309,8 +309,11 @@ fn coverage_command(test_command: &[String], rcfile: &Path) -> Option<Vec<String
     Some(command)
 }
 
-fn coverage_is_installed() -> bool {
-    Command::new("python")
+/// Asked of the interpreter that will run it. A virtualenv without coverage,
+/// probed through whichever `python` is on PATH, answers for the wrong one and
+/// the wrapped baseline then dies with no junit report.
+fn coverage_is_installed(python: &str) -> bool {
+    Command::new(python)
         .args(["-m", "coverage", "--version"])
         .output()
         .map(|output| output.status.success())
