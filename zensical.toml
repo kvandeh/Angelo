@@ -18,6 +18,7 @@ nav = [
   { "Architecture" = "04-architecture.md" },
   { "Benchmarks" = "05-benchmarks.md" },
   { "Operators and sampling" = "06-operators-and-sampling.md" },
+  { "Reports" = "07-reports.md" },
   { "Support" = "support.md" },
 ]
 

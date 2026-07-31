@@ -88,7 +88,21 @@ struct Run {
 }
 
 impl Run {
+    /// Both streams, joined. Angelo puts its report on stdout and its running
+    /// commentary on stderr, and most of these tests ask whether a run *said*
+    /// something rather than which stream carried it. The two that do care
+    /// about the split say so: `expect_report` and `expect_failure_stdout`.
     fn expect_success(self) -> String {
+        assert!(
+            self.succeeded,
+            "angelo failed\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            self.stdout, self.stderr
+        );
+        format!("{}\n{}", self.stderr, self.stdout)
+    }
+
+    /// stdout alone, which is the report and nothing else.
+    fn expect_report(self) -> String {
         assert!(
             self.succeeded,
             "angelo failed\n--- stdout ---\n{}\n--- stderr ---\n{}",
@@ -104,13 +118,6 @@ impl Run {
             self.stdout
         );
         self.stderr
-    }
-
-    /// A run that finished but had something to warn about. Both streams come
-    /// back joined: the warnings and the summary they explain are one story.
-    fn expect_warning(self) -> String {
-        let warnings = self.stderr.clone();
-        format!("{warnings}\n{}", self.expect_success())
     }
 
     /// A threshold failure is a verdict, not a crash: it exits non-zero with
@@ -311,7 +318,7 @@ fn half_red_project(name: &str) -> Project {
 #[test]
 fn a_red_baseline_scores_what_the_failing_tests_do_not_cover() {
     let project = half_red_project("red-baseline");
-    let output = project.angelo(&["exec"]).expect_warning();
+    let output = project.angelo(&["exec"]).expect_success();
 
     assert!(output.contains("baseline RED"), "{output}");
     assert!(output.contains("1 tests were already failing"), "{output}");
@@ -624,4 +631,121 @@ fn exec_reports_nothing_to_mutate() {
 
     let stderr = project.angelo(&["exec"]).expect_failure();
     assert!(stderr.contains("no Python files found"), "{stderr}");
+}
+
+/// The property CI depends on: the report is the program's *output*, not
+/// commentary about it, so silencing the commentary must not silence the score.
+/// `verdict-matrix.sh` and `bench-repo.sh` both grep these lines out of a run.
+#[test]
+fn the_report_still_prints_at_the_quietest_verbosity() {
+    let project = calculator_project("verbosity");
+    let run = project.angelo(&["exec", "--workers", "2", "--verbosity", "error"]);
+    let stderr = run.stderr.clone();
+    let stdout = run.expect_report();
+
+    assert!(stdout.contains("=== mutation report ==="), "{stdout}");
+    assert!(stdout.contains("score:"), "{stdout}");
+    assert!(stdout.contains("survivors"), "{stdout}");
+    // The commentary is what went away.
+    assert!(!stderr.contains("INFO"), "{stderr}");
+    assert!(!stderr.contains("enumerated"), "{stderr}");
+}
+
+/// A bar is drawn with control characters, and a redirected run must not carry
+/// any. `indicatif` hides itself off a TTY, and this is what proves it.
+#[test]
+fn a_redirected_run_writes_no_control_characters() {
+    let project = calculator_project("no-escapes");
+    let run = project.angelo(&["exec", "--workers", "2"]);
+    for (stream, text) in [("stdout", &run.stdout), ("stderr", &run.stderr)] {
+        assert!(!text.contains('\r'), "{stream} carried a carriage return");
+        assert!(!text.contains('\u{1b}'), "{stream} carried an ANSI escape");
+    }
+}
+
+/// Both report files, and the one thing that must be true of them: they agree
+/// with the terminal, because all three ask the same `Summary` for the score.
+#[test]
+fn the_report_files_agree_with_the_terminal() {
+    let project = calculator_project("report-files");
+    let stdout = project
+        .angelo(&[
+            "exec",
+            "--workers",
+            "2",
+            "--report",
+            "run.json",
+            "--html-report",
+            "run.html",
+        ])
+        .expect_report();
+    assert!(stdout.contains("score: 20.0%"), "{stdout}");
+
+    let json = fs::read_to_string(project.root.join("run.json")).expect("run.json");
+    assert!(json.contains("\"schemaVersion\": \"2.0\""), "{json}");
+    assert!(
+        json.contains("\"framework\": { \"name\": \"Angelo\""),
+        "{json}"
+    );
+    // 1 killed and 4 survived, and the schema splits those four: the two on
+    // `unused` are on a line no test runs at all, which is a different finding
+    // from the two a test ran and failed to notice.
+    assert_eq!(json.matches("\"status\": \"Killed\"").count(), 1, "{json}");
+    assert_eq!(
+        json.matches("\"status\": \"Survived\"").count(),
+        2,
+        "{json}"
+    );
+    assert_eq!(
+        json.matches("\"status\": \"NoCoverage\"").count(),
+        2,
+        "{json}"
+    );
+    // A root would be stripped downstream by literal match, and a Windows one
+    // against forward-slashed keys strips nothing at all.
+    assert!(!json.contains("projectRoot"), "{json}");
+    assert!(json.contains("\"calculator.py\""), "{json}");
+
+    let html = fs::read_to_string(project.root.join("run.html")).expect("run.html");
+    assert!(html.contains("20.0%"), "the html score must match stdout");
+    assert!(!html.contains("{{"), "a placeholder went unfilled");
+    assert!(
+        !html.contains("<script"),
+        "the report must not carry script"
+    );
+}
+
+/// A report is output and never a verdict. Writing one must not move the score,
+/// which is the same claim `verdict-matrix.sh` makes about the speed features.
+#[test]
+fn writing_a_report_does_not_change_the_verdict() {
+    let plain = calculator_project("report-neutral-off")
+        .angelo(&["exec", "--workers", "2"])
+        .expect_report();
+    let reported = calculator_project("report-neutral-on")
+        .angelo(&["exec", "--workers", "2", "--report", "run.json"])
+        .expect_report();
+
+    let counts = |text: &str| {
+        text.lines()
+            .filter(|line| line.trim_start().starts_with(|c: char| c.is_alphabetic()))
+            .filter(|line| line.contains(':'))
+            .map(str::trim)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(counts(&plain), counts(&reported));
+}
+
+/// `--init-only` never runs a mutant, and a report that needed a run to exist
+/// would be a report nobody could produce from a resumed database.
+#[test]
+fn a_report_is_written_without_running_anything() {
+    let project = calculator_project("report-init-only");
+    project
+        .angelo(&["exec", "--init-only", "--report", "run.json"])
+        .expect_success();
+
+    let json = fs::read_to_string(project.root.join("run.json")).expect("run.json");
+    assert_eq!(json.matches("\"status\": \"Pending\"").count(), 5, "{json}");
 }

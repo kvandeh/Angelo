@@ -47,9 +47,11 @@ pub struct Config {
     /// Exit non-zero when the score comes in under this percentage, so CI can
     /// gate on it. 0 = no threshold.
     pub fail_under: f64,
-    /// Draw one redrawn progress bar instead of a line per mutant. Runs of more
-    /// than a thousand mutants do this anyway; this forces it at any size.
-    pub show_loading: bool,
+    /// Write the run to this path in the mutation-testing-report schema, the
+    /// format Stryker's viewers and dashboards read. Empty = off.
+    pub report: String,
+    /// Write one self-contained HTML file to this path. Empty = off.
+    pub html_report: String,
 }
 
 impl Default for Config {
@@ -66,7 +68,8 @@ impl Default for Config {
             timeout_factor: 2.0,
             exclude: Vec::new(),
             fail_under: 0.0,
-            show_loading: false,
+            report: String::new(),
+            html_report: String::new(),
         }
     }
 }
@@ -301,13 +304,13 @@ pub fn init() -> Result<()> {
     }
     let config = Config::detect();
     write(&config)?;
-    println!("wrote {CONFIG_FILE} (paths = {:?})", config.paths);
+    log::info!("wrote {CONFIG_FILE} (paths = {:?})", config.paths);
     Ok(())
 }
 
 pub fn load_or_init() -> Result<Config> {
     if !Path::new(CONFIG_FILE).exists() {
-        println!("no {CONFIG_FILE} found, generating one");
+        log::info!("no {CONFIG_FILE} found, generating one");
         let config = Config::detect();
         write(&config)?;
         return Ok(config);
@@ -376,7 +379,18 @@ mod tests {
         .expect("an older config must still parse");
         assert!(old.test_selection);
         assert_eq!(old.batch_size, 8);
-        assert!(!old.show_loading);
+        assert!(old.report.is_empty());
+        assert!(old.html_report.is_empty());
+    }
+
+    /// The other direction, and the one that bites: `show_loading` was removed
+    /// when every phase got a bar, and a config still naming it has to keep
+    /// working rather than failing to parse.
+    #[test]
+    fn a_config_naming_a_removed_field_still_loads() {
+        let stale: Config = toml::from_str("paths = [\".\"]\nshow_loading = true\n")
+            .expect("a config naming a dropped key must still parse");
+        assert_eq!(stale.paths, ["."]);
     }
 
     fn excluded(patterns: &[&str], path: &str) -> bool {

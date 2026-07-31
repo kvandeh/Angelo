@@ -58,6 +58,27 @@ impl Status {
     pub fn is_detected(self) -> bool {
         matches!(self, Status::Killed | Status::Timeout)
     }
+
+    /// This verdict's name in the mutation-testing-report schema.
+    ///
+    /// `executed` is what splits `survived` in two. A mutant no test ever ran
+    /// is `NoCoverage`, and that is a different finding with a different fix
+    /// from a mutant a test did run and failed to notice.
+    ///
+    /// `error` maps to `RuntimeError` rather than `CompileError` on purpose. A
+    /// broken test command produces a run of nothing but errors, and it has to
+    /// stay visible in the report rather than reading as a clean bill of
+    /// health.
+    pub fn schema_name(self, executed: bool) -> &'static str {
+        match self {
+            Status::Killed => "Killed",
+            Status::Timeout => "Timeout",
+            Status::Survived if executed => "Survived",
+            Status::Survived => "NoCoverage",
+            Status::Error => "RuntimeError",
+            Status::Untestable => "Ignored",
+        }
+    }
 }
 
 impl Mutant {
@@ -72,6 +93,47 @@ impl Mutant {
     /// The file path with forward slashes, as coverage.py records it.
     pub fn coverage_file(&self) -> String {
         self.file.to_string_lossy().replace('\\', "/")
+    }
+
+    /// How this file is named in a report file: relative to the project root,
+    /// forward slashes, no `./`.
+    ///
+    /// A report is read by tools that resolve these back to real files, and a
+    /// Windows backslash resolves to nothing on the machine reading it. The
+    /// `./` goes for the same reason, since `./src/x.py` and `src/x.py` are one
+    /// file to a person and two strings to a consumer.
+    pub fn report_path(&self) -> String {
+        let forward = self.coverage_file();
+        forward.strip_prefix("./").unwrap_or(&forward).to_string()
+    }
+
+    /// Which family of fault this mutant plants, named in the vocabulary the
+    /// mutation-testing-report schema's viewers already speak.
+    ///
+    /// Derived from the token rather than stored: `CREATE TABLE IF NOT EXISTS`
+    /// cannot add a column to a `.angelo/` an older build wrote, and a
+    /// migration is not worth one string. The arms have to keep up with
+    /// `operators!`, which is what `every_operator_has_a_family` checks.
+    pub fn mutator(&self) -> &'static str {
+        match self.original.as_str() {
+            "+" | "-" | "*" | "/" | "//" | "%" | "**" => "ArithmeticOperator",
+            "&" | "|" | "^" | "<<" | ">>" => "BitwiseOperator",
+            "==" | "!=" | "<" | "<=" | ">" | ">=" => "EqualityOperator",
+            "and" | "or" => "LogicalOperator",
+            "True" | "False" => "BooleanLiteral",
+            "not" | "~" => "UnaryOperator",
+            "is" | "is not" | "in" | "not in" => "ConditionalExpression",
+            "break" | "continue" | "return" => "StatementSwap",
+            // Every comparison ending in `=` was matched above, so what is left
+            // is an augmented assignment.
+            text if text.ends_with('=') => "AssignmentOperator",
+            // A prefix puts `f`, `b` or `r` before the quote, so the closing one
+            // is the reliable end to look at.
+            text if text.ends_with(['"', '\'']) => "StringLiteral",
+            text if text.starts_with(|c: char| c.is_ascii_digit()) => "NumberLiteral",
+            // All that reaches here is `name_swaps`: a string method or deepcopy.
+            _ => "MethodExpression",
+        }
     }
 }
 
@@ -330,28 +392,62 @@ impl ForHeaders {
     }
 }
 
+/// A place in a file, 1-based on both axes, with the column counted in
+/// **characters**. The mutation-testing-report schema requires exactly this,
+/// and a byte column would drift on any line holding a non-ASCII string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Position {
+    pub line: u32,
+    pub column: u32,
+}
+
 /// Line numbers for offsets that only ever move forward. The token stream is
 /// already in order, so counting from where the last question left off scans a
 /// file once, where counting from byte zero scanned it once per mutant.
 #[derive(Default)]
-struct Lines {
+pub struct Lines {
     scanned: usize,
     newlines: u32,
+    /// Just past the most recent newline: where the current line's columns are
+    /// counted from.
+    line_start: usize,
 }
 
 impl Lines {
-    fn at(&mut self, source: &str, byte_offset: usize) -> u32 {
-        // An offset behind the cursor cannot happen from a sorted token stream,
-        // and asking for one repeats the last answer rather than panicking.
-        self.newlines += source
+    /// Move the cursor up to `byte_offset`, taking in what it passes over.
+    ///
+    /// An offset behind the cursor cannot happen from a sorted token stream,
+    /// and asking for one repeats the last answer rather than panicking.
+    fn advance(&mut self, source: &str, byte_offset: usize) {
+        let span = source
             .as_bytes()
             .get(self.scanned..byte_offset)
-            .unwrap_or_default()
-            .iter()
-            .filter(|byte| **byte == b'\n')
-            .count() as u32;
+            .unwrap_or_default();
+        // Two passes rather than one indexed loop: both of these vectorise, and
+        // `advance` runs once per token across every file in the project.
+        self.newlines += span.iter().filter(|byte| **byte == b'\n').count() as u32;
+        if let Some(last) = span.iter().rposition(|byte| *byte == b'\n') {
+            self.line_start = self.scanned + last + 1;
+        }
         self.scanned = byte_offset;
+    }
+
+    pub fn at(&mut self, source: &str, byte_offset: usize) -> u32 {
+        self.advance(source, byte_offset);
         self.newlines + 1
+    }
+
+    pub fn position(&mut self, source: &str, byte_offset: usize) -> Position {
+        self.advance(source, byte_offset);
+        Position {
+            line: self.newlines + 1,
+            column: source
+                .get(self.line_start..byte_offset)
+                .unwrap_or_default()
+                .chars()
+                .count() as u32
+                + 1,
+        }
     }
 }
 
@@ -510,6 +606,18 @@ mod tests {
         assert_eq!(found[0].coverage_file(), "src/pkg/mod.py");
     }
 
+    /// A report path has to resolve on the machine reading the report, which is
+    /// not always the machine that wrote it.
+    #[test]
+    fn a_report_path_is_relative_and_forward_slashed() {
+        let windows = enumerate_source("a = 1 + 2\n", Path::new(".\\src\\pkg\\mod.py")).unwrap();
+        assert_eq!(windows[0].report_path(), "src/pkg/mod.py");
+        let plain = enumerate_source("a = 1 + 2\n", Path::new("./calc.py")).unwrap();
+        assert_eq!(plain[0].report_path(), "calc.py");
+        let bare = enumerate_source("a = 1 + 2\n", Path::new("calc.py")).unwrap();
+        assert_eq!(bare[0].report_path(), "calc.py");
+    }
+
     #[test]
     fn a_removal_reads_clearly_in_the_report() {
         let mutant = mutants("if not ready:\n    pass\n")
@@ -517,5 +625,124 @@ mod tests {
             .find(|m| m.original == "not")
             .unwrap();
         assert!(mutant.to_string().contains("<removed>"));
+    }
+
+    /// Both axes are 1-based, and the column restarts at each newline. The
+    /// report schema sets `minimum: 1` on both, so a 0 here is not merely off
+    /// by one, it is invalid.
+    #[test]
+    fn positions_count_from_one_on_both_axes() {
+        let source = "a = 1\nbb = 22\n";
+        let mut lines = Lines::default();
+        assert_eq!(lines.position(source, 0), Position { line: 1, column: 1 });
+        assert_eq!(lines.position(source, 4), Position { line: 1, column: 5 });
+        assert_eq!(lines.position(source, 6), Position { line: 2, column: 1 });
+        assert_eq!(lines.position(source, 8), Position { line: 2, column: 3 });
+    }
+
+    /// A column is a count of characters, not of bytes. `é` is two bytes, so a
+    /// byte column would report the `+` one place further right than it is.
+    #[test]
+    fn columns_count_characters_rather_than_bytes() {
+        let source = "s = 'héllo' + x\n";
+        let plus = source.find('+').expect("the operator");
+        let mut lines = Lines::default();
+        assert_eq!(
+            lines.position(source, plus),
+            Position {
+                line: 1,
+                column: 13
+            }
+        );
+    }
+
+    /// Two blank lines in a row leave `line_start` on the last of them, so a
+    /// column after a run of newlines still restarts.
+    #[test]
+    fn a_run_of_newlines_still_restarts_the_column() {
+        let source = "a = 1\n\n\n    b = 2\n";
+        let mut lines = Lines::default();
+        assert_eq!(lines.position(source, 12), Position { line: 4, column: 5 });
+    }
+
+    /// A mutant no test ran is a different finding from one a test ran and
+    /// missed, and the schema has a separate name for it.
+    #[test]
+    fn the_schema_splits_survived_on_whether_anything_ran() {
+        assert_eq!(Status::Survived.schema_name(true), "Survived");
+        assert_eq!(Status::Survived.schema_name(false), "NoCoverage");
+        assert_eq!(Status::Killed.schema_name(true), "Killed");
+        assert_eq!(Status::Timeout.schema_name(true), "Timeout");
+        assert_eq!(Status::Untestable.schema_name(false), "Ignored");
+    }
+
+    /// A run of nothing but errors is what a broken test command looks like.
+    /// `CompileError` would let a consumer treat it as noise to filter out.
+    #[test]
+    fn an_errored_mutant_stays_visible_in_the_schema() {
+        assert_eq!(Status::Error.schema_name(true), "RuntimeError");
+    }
+
+    /// The mutator name carries the whole message a report reader sees, so
+    /// every operator needs one. Each replacement in the table is also some
+    /// other operator's original, so the table doubles as the input list: add a
+    /// token whose family `mutator` does not know and this fails.
+    #[test]
+    fn every_operator_has_a_family() {
+        for (_, replacement) in MUTABLE_TOKENS {
+            let mutant = Mutant {
+                id: 0,
+                file: PathBuf::new(),
+                line: 1,
+                byte_start: 0,
+                byte_end: 0,
+                original: replacement.to_string(),
+                replacement: String::new(),
+            };
+            assert_ne!(
+                mutant.mutator(),
+                "MethodExpression",
+                "{replacement:?} fell through to the catch-all"
+            );
+        }
+    }
+
+    #[test]
+    fn families_name_what_the_mutant_actually_did() {
+        let family = |source: &str, original: &str| {
+            mutants(source)
+                .into_iter()
+                .find(|m| m.original == original)
+                .unwrap_or_else(|| panic!("no mutant on {original:?}"))
+                .mutator()
+        };
+        assert_eq!(family("a = 1 + 2\n", "+"), "ArithmeticOperator");
+        assert_eq!(family("a = b << 2\n", "<<"), "BitwiseOperator");
+        assert_eq!(family("a = b >= 2\n", ">="), "EqualityOperator");
+        assert_eq!(family("a = b and c\n", "and"), "LogicalOperator");
+        assert_eq!(family("a = True\n", "True"), "BooleanLiteral");
+        assert_eq!(family("a = 1\n", "1"), "NumberLiteral");
+        assert_eq!(family("a = 'hi'\n", "'hi'"), "StringLiteral");
+        assert_eq!(family("if not a:\n    pass\n", "not"), "UnaryOperator");
+        assert_eq!(family("a += 1\n", "+="), "AssignmentOperator");
+        assert_eq!(family("a = b.lower()\n", "lower"), "MethodExpression");
+        assert_eq!(family("a = b is c\n", "is"), "ConditionalExpression");
+    }
+
+    /// A prefixed or raw string does not start with a quote, so the family has
+    /// to look at the end of the token rather than the beginning.
+    #[test]
+    fn a_prefixed_string_is_still_a_string() {
+        let mutant = |original: &str| Mutant {
+            id: 0,
+            file: PathBuf::new(),
+            line: 1,
+            byte_start: 0,
+            byte_end: 0,
+            original: original.to_string(),
+            replacement: String::new(),
+        };
+        assert_eq!(mutant("f'{x}'").mutator(), "StringLiteral");
+        assert_eq!(mutant("rb\"raw\"").mutator(), "StringLiteral");
     }
 }

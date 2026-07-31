@@ -34,15 +34,15 @@ angelo exec      # enumerate mutants, then run them
 ```
 
 ```
-enumerated 74 mutants across 3 files
-baseline: running the unmutated suite once, with per-test coverage
-baseline green in 4.8s, timeout 14.5s for a whole-suite run, from its own tests for a selected one
-9 mutants sit on lines no test executes, survived without a single run
-running 17 batches on 16 workers, covering tests only
-[1/65] calculator.py:4 0.21 -> 1.21  survived  (3.4s)
-[65/65] text.py:4 "," -> "XX,XX"  killed  (1.0s)
+16:20:04 INFO   enumerated 74 mutants across 3 files
+16:20:09 INFO   baseline green in 4.8s, timeout 14.5s for a whole-suite run, from its own tests for a selected one
+16:20:09 INFO   9 mutants sit on lines no test executes, survived without a single run
+16:20:09 INFO   running 17 batches on 16 workers, covering tests only
+  mutants   [############################--------]  78%  51/65  detected 34  survived 17  ~11s left
 
 survivors (changes your tests never noticed):
+  calculator.py:4 0.21 -> 1.21
+  calculator.py:24 < -> <=
 
 === mutation report ===
     killed: 46
@@ -52,6 +52,33 @@ survivors (changes your tests never noticed):
 
 The survivors are the output worth reading. `exec` is resumable: interrupt it and run it
 again to carry on, or delete `.angelo/` to start fresh.
+
+**The report is output; everything above it is commentary.** The report goes to stdout and
+prints at every verbosity, so a script can read it. The timestamped lines and the bar go to
+stderr, and `--verbosity` turns them down.
+
+```bash
+angelo exec --verbosity warn      # error | warn | info | debug | trace
+```
+
+The default is `info`, or `warn` when the `CI` environment variable is set, because in CI
+nobody is watching it scroll past. `RUST_LOG` works too. Off a terminal the bar disappears
+by itself, so a piped run stays byte-clean.
+
+## Reports you can keep
+
+A run that only ever reached a terminal cannot be attached to a pull request.
+
+```bash
+angelo exec --html-report angelo.html   # one self-contained file, no network
+angelo exec --report angelo.json        # the mutation-testing-report schema
+```
+
+The JSON is not a shape Angelo invented. It is
+[`mutation-testing-report-schema`](https://github.com/stryker-mutator/mutation-testing-elements/tree/master/packages/report-schema)
+version 2, the format StrykerJS, Stryker.NET, Stryker4s and muttest all write, so Stryker's
+existing viewers and dashboards read an Angelo run without a converter. See
+[reports](https://angelo.kcvdh.com/07-reports/).
 
 ## What mutation testing is
 

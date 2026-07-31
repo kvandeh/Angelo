@@ -94,7 +94,7 @@ impl TestRunner {
                 scope.spawn(
                     move || match Worker::start(self, coverage, sender, worker_id) {
                         // Unclaimed batches stay pending, so a re-run picks them up.
-                        Err(error) => eprintln!("worker could not copy the project: {error:#}"),
+                        Err(error) => log::error!("worker could not copy the project: {error:#}"),
                         Ok(worker) => worker.take_batches(batches, next_batch),
                     },
                 );

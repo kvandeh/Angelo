@@ -176,6 +176,43 @@ impl Database {
         Ok(counts)
     }
 
+    /// Every mutant with whatever settled it, for the report files.
+    ///
+    /// `survivors()` is not enough for a report: the killed mutants are what
+    /// the score is made of, and a viewer showing only survivors cannot draw
+    /// one. Ordered by file and then by byte, because the line and column
+    /// lookup walks each file with a forward-only cursor.
+    pub fn all_mutants(&self) -> Result<Vec<Settled>> {
+        let mut rows = self.runtime.block_on(self.connection.query(
+            "SELECT m.id, m.file, m.line, m.byte_start, m.byte_end, m.original, m.replacement,
+                    m.status, m.execution_id, e.duration_ms, e.failed_tests
+             FROM mutant m
+             LEFT JOIN execution e ON e.id = m.execution_id
+             ORDER BY m.file, m.byte_start, m.id",
+            (),
+        ))?;
+        let mut settled = Vec::new();
+        while let Some(row) = self.runtime.block_on(rows.next())? {
+            let failed: String = row.get(10).unwrap_or_default();
+            settled.push(Settled {
+                mutant: Mutant {
+                    id: row.get(0)?,
+                    file: PathBuf::from(row.get::<String>(1)?),
+                    line: row.get::<i64>(2)? as u32,
+                    byte_start: row.get::<i64>(3)? as usize,
+                    byte_end: row.get::<i64>(4)? as usize,
+                    original: row.get(5)?,
+                    replacement: row.get(6)?,
+                },
+                status: Status::parse(&row.get::<String>(7)?),
+                executed: row.get::<Option<i64>>(8)?.is_some(),
+                duration_ms: row.get::<Option<i64>>(9).unwrap_or(None),
+                failed_tests: failed.lines().map(str::to_string).collect(),
+            });
+        }
+        Ok(settled)
+    }
+
     fn mutants_where(&self, condition: &str) -> Result<Vec<Mutant>> {
         let sql = format!(
             "SELECT id, file, line, byte_start, byte_end, original, replacement
@@ -196,6 +233,19 @@ impl Database {
         }
         Ok(mutants)
     }
+}
+
+/// A mutant and the run that judged it, or the absence of one.
+pub struct Settled {
+    pub mutant: Mutant,
+    /// `None` means pending: still in the pool, never run.
+    pub status: Option<Status>,
+    /// Whether any pytest run actually executed this mutant. A `survived`
+    /// mutant with no execution is one no test covers, which is a different
+    /// finding from one a test ran and failed to notice.
+    pub executed: bool,
+    pub duration_ms: Option<i64>,
+    pub failed_tests: Vec<String>,
 }
 
 pub struct CoverageRow {
