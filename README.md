@@ -16,16 +16,36 @@
   </a>
 </p>
 
-## Getting Started
+<p align="center">
+  <b><a href="https://angelo.kcvdh.com/quick-start/">Quick Start</a></b> ·
+  <a href="https://angelo.kcvdh.com/">Documentation</a> ·
+  <a href="https://angelo.kcvdh.com/05-benchmarks/">Benchmarks</a>
+</p>
 
-First download the Angelo package.
+---
 
-```bash
-pip install -i https://test.pypi.org/simple/ angelo
+Angelo measures how good your tests actually are. It breaks your code on purpose, one
+small change at a time, and reports which changes your test suite failed to notice. It is
+a single Rust binary that drives your ordinary pytest suite.
+
+## The problem it solves
+
+Coverage tells you a line ran. It does not tell you whether anything checked the result.
+
+```python
+def is_adult(age):
+    return age >= 18
 ```
 
-Then run it from a project with **python and pytest on your PATH** and a **passing test
-suite**:
+Change `>=` to `>` and the function now rejects eighteen year olds. If your tests still
+pass, the boundary was never tested, even at 100% coverage. Angelo finds that line and
+tells you about it.
+
+Each deliberate change is a **mutant**. A mutant is **killed** when a test fails, and it
+**survived** when every test passed. Survivors are the output worth reading: each one is a
+bug you could ship without a single test objecting.
+
+## Quick start
 
 ```bash
 cd your-project
@@ -44,14 +64,18 @@ survivors (changes your tests never noticed):
   calculator.py:4 0.21 -> 1.21
   calculator.py:24 < -> <=
 
-=== mutation report ===
-    killed: 46
-  survived: 28
-     score: 62.2% (46/74 detected)
+Mutate what the branch added, and fail if too much of it survived.
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0
+- run: angelo exec --diff-base $GITHUB_BASE_REF --fail-under 80
 ```
 
-The survivors are the output worth reading. `exec` is resumable: interrupt it and run it
-again to carry on, or delete `.angelo/` to start fresh.
+`--fail-under` exits 1 with one line: `score 62.2% is below --fail-under 80.0%`. A run that
+could not be scored fails it too, because a tool that could not measure must never report
+success. See the [Quick Start](https://angelo.kcvdh.com/quick-start/).
 
 **The report is output; everything above it is commentary.** The report goes to stdout and
 prints at every verbosity, so a script can read it. The timestamped lines and the bar go to
@@ -82,18 +106,95 @@ existing viewers and dashboards read an Angelo run without a converter. See
 
 ## What mutation testing is
 
-Coverage tells you a line ran. It does not tell you whether anything checked the result.
+Most of a mutation run is not testing. On one selected test, roughly 95% of the 327 ms
+goes to starting Python and importing pytest. Angelo attacks that from four directions:
 
-```python
-def is_adult(age):
-    return age >= 18
+| Technique | What it skips |
+| --- | --- |
+| [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | Runs. Several mutants share one test run. |
+| [Test selection](https://angelo.kcvdh.com/02-test-selection/) | Tests. Only the ones that reach the mutant. |
+| [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | Startup. One pytest process stays alive. |
+| `--diff`, `--diff-base` and `--sample` | Mutants. Only changed lines, only what a branch adds, or a random sample. |
+
+On a synthetic 200 mutant project with a two second suite, these take **48.1s down to
+4.5s** with an identical score.
+
+> [!WARNING]
+> That figure is an upper bound. It comes from a project with independent functions and no
+> timeouts, which is the best case for all three techniques. Measured against the real
+> [click](https://github.com/pallets/click) codebase, where about 7% of mutants hang until
+> the timeout, the same techniques bought almost nothing, because waiting for timeouts
+> dominates. The [benchmarks](https://angelo.kcvdh.com/05-benchmarks/) page reports
+> both results.
+
+## The rule everything obeys
+
+Batching, test selection and warm workers are **speed features only**. None may change a
+verdict.
+
+This is enforced rather than promised. [`scripts/verdict-matrix.sh`](scripts/verdict-matrix.sh)
+runs eight configurations against the same project and fails the build if any of them
+disagrees about the score. It runs in CI on every push. A speedup that changes a result is
+treated as a bug.
+
+## Requirements
+
+- **python and pytest** on your PATH.
+- **A passing test suite.** Angelo refuses to run against a red one, because a failing test
+  cannot tell you anything about a planted fault.
+- **`pip install coverage`**, strongly recommended. Coverage unlocks batching and test
+  selection, which provide most of the speed. Without it Angelo still works, one mutant per
+  run.
+
+Runs natively on Windows, Linux and macOS. Unlike mutmut, it does not need `fork()`.
+
+## Installing
+
+Not on PyPI proper yet. Releases go to **TestPyPI** while the pipeline is being proven:
+
+```bash
+pip install --index-url https://test.pypi.org/simple/ angelo
 ```
 
-Change `>=` to `>` and the function now rejects eighteen year olds. If your tests still
-pass, the boundary was never tested, even at 100% coverage.
+The wheel carries the compiled binary rather than any Python, so `pip` puts `angelo` on
+your PATH and nothing gets imported. Wheels are built for Windows x86-64, Linux x86-64 and
+Apple Silicon; anything else builds from source:
 
-Each deliberate change is a **mutant**. A mutant is **killed** when a test fails, and it
-**survived** when every test passed. Every survivor is a bug you could ship without a
-single test objecting.
+```bash
+git clone https://github.com/kvandeh/angelo.git
+cd angelo
+cargo build --release   # target/release/angelo
+```
 
-For everything else, see the [documentation](https://angelo.kcvdh.com/).
+## Documentation
+
+Full documentation at **[angelo.kcvdh.com](https://angelo.kcvdh.com/)**.
+Each page is written as a short paper: abstract, background, method, result, limits.
+
+| Page | Covers |
+| --- | --- |
+| [Quick Start](https://angelo.kcvdh.com/quick-start/) | First run, reading the report, configuration, troubleshooting |
+| [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | The conflict rule and why it is sound |
+| [Test selection](https://angelo.kcvdh.com/02-test-selection/) | Coverage into pytest node ids |
+| [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | The `fork()` substitute, and why subinterpreters are not one |
+| [Architecture](https://angelo.kcvdh.com/04-architecture/) | Module map and design rules |
+| [Benchmarks](https://angelo.kcvdh.com/05-benchmarks/) | Every measurement, including the disappointing ones |
+| [Operators and sampling](https://angelo.kcvdh.com/06-operators-and-sampling/) | What gets mutated, and how to cap the pool |
+
+## Status
+
+In development. The core works and is tested, but expect rough edges and no stability
+guarantee yet.
+
+## Contributing and support
+
+Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) is one paragraph.
+
+If Angelo is useful to you, [sponsorship](https://github.com/sponsors/kvandeh) pays for the
+time it takes. Reporting a wrong verdict is worth just as much: see
+[Support](https://angelo.kcvdh.com/support/).
+
+## Author
+
+Written and owned by **Kieran van der Heijde**.
+[LinkedIn](https://www.linkedin.com/in/kcvdh) · [GitHub](https://github.com/kvandeh)
