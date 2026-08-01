@@ -63,6 +63,7 @@ impl Database {
     }
 
     pub fn insert_mutants(&self, mutants: &[Mutant]) -> Result<()> {
+        let batched = Batched::begin(self)?;
         for mutant in mutants {
             let file = mutant
                 .file
@@ -81,7 +82,7 @@ impl Database {
                 ),
             ))?;
         }
-        Ok(())
+        batched.commit()
     }
 
     /// Keep a random `keep` of the enumerated mutants and delete the rest.
@@ -91,8 +92,14 @@ impl Database {
     /// random sample of the whole codebase rather than a complete census of
     /// one arbitrary corner of it. Returns how many were dropped.
     ///
-    /// The shuffle is seeded from the current time, so re-running the same
-    /// project picks a different sample each time.
+    /// The shuffle is seeded from the clock, so **each run draws a different
+    /// sample**. That is what makes it a sample: a fixed seed would study the
+    /// same corner of the codebase every time and never learn anything about
+    /// the rest, and two runs agreeing would mean nothing.
+    ///
+    /// The cost is that two sampled scores are not comparable, so a benchmark
+    /// or a `--fail-under` gate wanting the same pool twice has to keep
+    /// `.angelo/` rather than re-enumerate.
     pub fn sample_down_to(&self, keep: usize) -> Result<usize> {
         let mut ids = self.all_ids()?;
         if ids.len() <= keep {
@@ -104,12 +111,14 @@ impl Database {
             ids.swap(index, (random.next() % (index as u64 + 1)) as usize);
         }
         let dropped = &ids[keep..];
+        let batched = Batched::begin(self)?;
         for id in dropped {
             self.runtime.block_on(
                 self.connection
                     .execute("DELETE FROM mutant WHERE id = ?", (*id,)),
             )?;
         }
+        batched.commit()?;
         Ok(dropped.len())
     }
 
@@ -233,6 +242,50 @@ impl Database {
         }
         Ok(mutants)
     }
+
+    fn statement(&self, sql: &str) -> Result<()> {
+        self.runtime
+            .block_on(self.connection.execute(sql, ()))
+            .with_context(|| format!("running {sql}"))?;
+        Ok(())
+    }
+}
+
+/// One commit for a whole loop of statements instead of one per row.
+///
+/// Enumerating flask writes 2541 rows and then deletes 1541 of them to make a
+/// 1000-mutant sample. Committing each of those on its own took **30 seconds**,
+/// which was a quarter of the entire run.
+///
+/// Rolls back on drop, so a loop that returns early with `?` leaves no half
+/// enumerated pool for the next `exec` to resume from.
+struct Batched<'a> {
+    database: &'a Database,
+    committed: bool,
+}
+
+impl<'a> Batched<'a> {
+    fn begin(database: &'a Database) -> Result<Batched<'a>> {
+        database.statement("BEGIN")?;
+        Ok(Batched {
+            database,
+            committed: false,
+        })
+    }
+
+    fn commit(mut self) -> Result<()> {
+        self.database.statement("COMMIT")?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for Batched<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = self.database.statement("ROLLBACK");
+        }
+    }
 }
 
 /// A mutant and the run that judged it, or the absence of one.
@@ -304,6 +357,7 @@ impl Xorshift {
     }
 }
 
+/// Seeded from the clock: the point of a sample is that it moves.
 pub fn get_random() -> Xorshift {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)

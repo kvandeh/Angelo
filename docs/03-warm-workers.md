@@ -78,12 +78,18 @@ library and site-packages stay loaded. That is the entire saving.
 A long lived process accumulating state is exactly the kind of thing that produces wrong
 verdicts, so three guards apply.
 
-**Any anomaly retires the worker.** A timeout, a crash, or a reply Angelo cannot parse
-means the process is killed and the mutant is re-run in a fresh subprocess. Warm running
-can therefore only change the clock.
+**Any anomaly retires the worker.** A crash, or a reply Angelo cannot parse, means the
+process is killed and the mutant is re-run in a fresh subprocess. Warm running can
+therefore only change the clock.
+
+A timeout retires a **purging** worker, which is still stuck on the test that hung. It does
+not retire a [forking](08-schemata.md#isolation) one: that parent never ran the test, it
+killed the child's process group and carried on, so restarting it would repay a warm-up
+that nothing has dirtied.
 
 **The process recycles.** After `warm_recycle_after` runs, default 50, it is replaced.
-This bounds anything that survives the module purge.
+This bounds anything that survives the module purge — and it does nothing on the fork path,
+where nothing accumulates to bound.
 
 **It only applies to plain pytest commands.** Anything else uses subprocesses.
 

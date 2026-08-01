@@ -320,7 +320,9 @@ workers = 0                          # 0 means one per CPU core
 batch_size = 8                       # mutants per run, 1 disables batching
 test_selection = true                # run only covering tests
 warm_workers = true                  # keep a pytest process alive
-warm_recycle_after = 50              # restart it every N runs
+warm_recycle_after = 50              # restart it every N runs (purge path only)
+schemata = true                      # compile every mutant into its file at once;
+                                     # Unix only, needs warm_workers
 sample = 0                           # 0 keeps every mutant
 timeout_factor = 2.0                 # timeout is a run's own tests * this, plus 5s
 exclude = []                         # globs to leave alone

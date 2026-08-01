@@ -16,6 +16,7 @@ use crate::config::SKIP_DIRS;
 use crate::coverage::Coverage;
 use crate::mutate::{Mutant, Status};
 use crate::pytest::{self, Budget, Selection, SuiteResult};
+use crate::schemata::Schemata;
 use crate::warm::WarmWorker;
 
 /// One decisive pytest run and the verdicts it settled.
@@ -74,9 +75,22 @@ pub struct TestRunner {
     pub warm_workers: bool,
     /// Restart that process every N runs, bounding any state it accumulates.
     pub warm_recycle_after: usize,
+    /// Every mutant compiled into its file at once, switched on by name. None
+    /// when the platform or the config cannot host it, and then every batch
+    /// takes the splice path.
+    pub schemata: Option<Schemata>,
 }
 
 impl TestRunner {
+    /// Whether a batch can be judged by switching mutants on rather than by
+    /// writing them into a file. All or nothing: a batch with one spliced
+    /// member has to be spliced, or that member never takes effect.
+    fn hosts(&self, mutants: &[&Mutant]) -> bool {
+        self.schemata
+            .as_ref()
+            .is_some_and(|schemata| mutants.iter().all(|mutant| schemata.hosts(mutant)))
+    }
+
     pub fn run_all(
         &self,
         batches: &[Batch],
@@ -132,8 +146,14 @@ impl<'a> Worker<'a> {
         outcomes: Sender<BatchOutcome>,
         worker_id: usize,
     ) -> Result<Worker<'a>> {
+        let copy = WorkerCopy::create(&runner.project_root, worker_id)?;
+        // The generated files go in once, before anything runs: every mutant
+        // the schemata host is already in this copy waiting to be named.
+        if let Some(schemata) = runner.schemata.as_ref() {
+            schemata.write_into(&copy.root)?;
+        }
         Ok(Worker {
-            copy: WorkerCopy::create(&runner.project_root, worker_id)?,
+            copy,
             runner,
             coverage,
             outcomes,
@@ -156,8 +176,8 @@ impl<'a> Worker<'a> {
 
     /// Green run: everyone survived. Red run: a failed test kills the batch
     /// member it covers. When a result cannot be attributed (timeout, crash,
-    /// a failure no member explains), split in half and re-run, a verdict
-    /// must come from a run that proves it.
+    /// a failure no member explains), re-run smaller, a verdict must come from
+    /// a run that proves it.
     fn judge(&self, mutants: &[&Mutant]) -> Listening {
         let started = Instant::now();
         let report = self.run_suite(mutants);
@@ -169,6 +189,17 @@ impl<'a> Worker<'a> {
         if mutants.len() > 1 {
             if let Some(outcome) = self.attribute(&report, mutants, elapsed) {
                 return self.outcomes.send(outcome);
+            }
+            // A timeout is the one outcome where halving is the wrong move.
+            // Every half still holding the hang waits out the whole budget
+            // again, so binary search pays for the hang once per level, while
+            // one run each pays for it once and lets the innocent members
+            // finish at their own speed on their own smaller selections.
+            if matches!(&report, Ok(report) if report.timed_out()) {
+                for mutant in mutants {
+                    self.judge(&[mutant])?;
+                }
+                return Ok(());
             }
             let (left, right) = mutants.split_at(mutants.len() / 2);
             self.judge(left)?;
@@ -205,21 +236,41 @@ impl<'a> Worker<'a> {
     fn run_suite(&self, mutants: &[&Mutant]) -> Result<RunReport> {
         let selection = match self.coverage {
             Some(coverage) if self.runner.test_selection => coverage.select(mutants),
-            _ => Selection::whole_suite(),
+            _ => Selection::whole_suite(mutants.len() == 1),
         };
         // A run that names its tests is budgeted from them: waiting out the
         // whole suite's budget for two tests worth 50ms tells us nothing.
         let timeout = self.runner.budget.for_selection(&selection);
-        let _patched = PatchedFiles::apply(&self.copy.root, mutants)?;
-        match self.run_warm(&selection, timeout) {
+
+        // Schemata are already in the copy, so the batch only has to name
+        // itself. Anything they cannot host is written into the file instead,
+        // which is always correct and merely re-imports.
+        let (active, _patched) = if self.runner.hosts(mutants) {
+            (Schemata::active_value(mutants), None)
+        } else {
+            let patched = PatchedFiles::apply(
+                &self.copy.root,
+                &self.runner.project_root,
+                self.runner.schemata.as_ref(),
+                mutants,
+            )?;
+            (String::new(), Some(patched))
+        };
+
+        match self.run_warm(&selection, timeout, &active) {
             Some(report) => Ok(report),
-            None => self.run_subprocess(&selection, timeout),
+            None => self.run_subprocess(&selection, timeout, &active),
         }
     }
 
     /// None means warm running is off, unavailable, or just failed, the caller
     /// then pays for a fresh subprocess, which is always correct.
-    fn run_warm(&self, selection: &Selection, timeout: Duration) -> Option<RunReport> {
+    fn run_warm(
+        &self,
+        selection: &Selection,
+        timeout: Duration,
+        active: &str,
+    ) -> Option<RunReport> {
         if !self.runner.warm_workers {
             return None;
         }
@@ -236,12 +287,16 @@ impl<'a> Worker<'a> {
             .ok();
         }
 
-        let run = slot.as_mut()?.run(selection, timeout);
+        let run = slot.as_mut()?.run(selection, timeout, active);
         match run {
-            // A timed-out worker is still stuck on that test: retire it, but the
-            // timeout itself is a real verdict.
+            // A purging worker that timed out is still stuck on that test, so
+            // it has to go. A forking one killed the child and never ran the
+            // test itself, and retiring it would repay a warm-up that nothing
+            // has dirtied — which on flask is most of what a timeout costs.
             Ok(run) if matches!(run.result, SuiteResult::TimedOut) => {
-                *slot = None;
+                if !run.forked {
+                    *slot = None;
+                }
                 Some(RunReport {
                     result: SuiteResult::TimedOut,
                     failed_tests: Vec::new(),
@@ -258,12 +313,18 @@ impl<'a> Worker<'a> {
         }
     }
 
-    fn run_subprocess(&self, selection: &Selection, timeout: Duration) -> Result<RunReport> {
+    fn run_subprocess(
+        &self,
+        selection: &Selection,
+        timeout: Duration,
+        active: &str,
+    ) -> Result<RunReport> {
         let result = pytest::run(
             &self.runner.test_command,
             &self.copy.root,
             timeout,
             selection,
+            active,
         )?;
         let failed_tests = match result.status() {
             Status::Killed => pytest::failed_tests(&self.copy.root).unwrap_or_default(),
@@ -287,6 +348,10 @@ impl RunReport {
         self.result.status() == Status::Survived
     }
 
+    fn timed_out(&self) -> bool {
+        matches!(self.result, SuiteResult::TimedOut)
+    }
+
     fn into_outcome(self, mutant: &Mutant, elapsed: Duration) -> BatchOutcome {
         BatchOutcome {
             duration_ms: elapsed.as_millis() as u64,
@@ -300,11 +365,21 @@ impl RunReport {
 
 /// Mutated files, restored when this drops.
 struct PatchedFiles {
-    originals: Vec<(PathBuf, String)>,
+    /// What each file has to hold again afterwards: its schemata if it has any,
+    /// its original source otherwise.
+    restore: Vec<(PathBuf, String)>,
 }
 
 impl PatchedFiles {
-    fn apply(root: &Path, mutants: &[&Mutant]) -> Result<PatchedFiles> {
+    /// Splice from the project's own file rather than from the copy: the copy
+    /// may already hold this file's schemata, whose bytes are nothing like the
+    /// offsets a mutant was enumerated against.
+    fn apply(
+        copy_root: &Path,
+        project_root: &Path,
+        schemata: Option<&Schemata>,
+        mutants: &[&Mutant],
+    ) -> Result<PatchedFiles> {
         let mut by_file: HashMap<&Path, Vec<&Mutant>> = HashMap::new();
         for mutant in mutants {
             by_file
@@ -314,15 +389,20 @@ impl PatchedFiles {
         }
 
         let mut patched = PatchedFiles {
-            originals: Vec::new(),
+            restore: Vec::new(),
         };
         for (file, mutants) in by_file {
-            let path = root.join(file);
-            let source =
-                fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+            let pristine = project_root.join(file);
+            let source = fs::read_to_string(&pristine)
+                .with_context(|| format!("reading {}", pristine.display()))?;
+            let path = copy_root.join(file);
             fs::write(&path, splice_all(&source, &mutants, file)?)
                 .with_context(|| format!("writing mutants into {}", path.display()))?;
-            patched.originals.push((path, source));
+            let restore = schemata
+                .and_then(|schemata| schemata.generated_for(file))
+                .map(str::to_string)
+                .unwrap_or(source);
+            patched.restore.push((path, restore));
         }
         Ok(patched)
     }
@@ -332,7 +412,7 @@ impl Drop for PatchedFiles {
     // Drop cannot return errors. A failed restore leaves the copy mutated,
     // which the next batch's original-bytes check turns into an error verdict.
     fn drop(&mut self) {
-        for (path, source) in &self.originals {
+        for (path, source) in &self.restore {
             let _ = fs::write(path, source);
         }
     }

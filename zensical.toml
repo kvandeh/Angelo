@@ -15,6 +15,7 @@ nav = [
   { "Batch mutating" = "01-batch-mutating.md" },
   { "Test selection" = "02-test-selection.md" },
   { "Warm workers" = "03-warm-workers.md" },
+  { "Schemata" = "08-schemata.md" },
   { "Architecture" = "04-architecture.md" },
   { "Benchmarks" = "05-benchmarks.md" },
   { "Operators and sampling" = "06-operators-and-sampling.md" },

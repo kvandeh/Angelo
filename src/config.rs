@@ -34,6 +34,10 @@ pub struct Config {
     pub warm_workers: bool,
     /// Restart that process every N runs, bounding accumulated state.
     pub warm_recycle_after: usize,
+    /// Compile every mutant of a file into the file at once and pick one with an
+    /// environment variable, so a run re-imports nothing. Needs the fork worker
+    /// to stay honest, so it does nothing where `fork()` does not exist.
+    pub schemata: bool,
     /// Cap the mutant pool at this many, dropping the rest at random.
     /// 0 = keep every mutant.
     pub sample: usize,
@@ -64,6 +68,7 @@ impl Default for Config {
             test_selection: true,
             warm_workers: true,
             warm_recycle_after: 50,
+            schemata: true,
             sample: 0,
             timeout_factor: 2.0,
             exclude: Vec::new(),

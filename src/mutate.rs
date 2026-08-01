@@ -330,7 +330,7 @@ pub fn enumerate_file(file: &Path) -> Result<Vec<Mutant>> {
     enumerate_source(&source, file)
 }
 
-fn enumerate_source(source: &str, file: &Path) -> Result<Vec<Mutant>> {
+pub(crate) fn enumerate_source(source: &str, file: &Path) -> Result<Vec<Mutant>> {
     let parsed = ruff_python_parser::parse_module(source)
         .with_context(|| format!("parsing {}", file.display()))?;
 

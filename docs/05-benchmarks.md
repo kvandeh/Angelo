@@ -117,11 +117,52 @@ rather than reported, because it compares two different tools.
 
 ### flask
 
-Skipped, and no longer for the reason given here before. Its suite is not green on this
-machine out of the box, which used to stop Angelo outright. A
-[red baseline now warns](quick-start.md#a-red-baseline-warns-rather-than-stops) and the
-mutants those tests cover come back `untestable`, so flask is measurable — it simply has
-not been measured yet.
+Now measured, and it is where four bugs were found. A 1000-mutant sample, 16 workers, a
+Ryzen 7 5800 (**8 physical cores**, 16 threads), enumeration included:
+
+| Fixed | Wall |
+| --- | --- |
+| — | 718 s |
+| coverage contexts resolve, so [selection](02-test-selection.md) works at all | 326 s |
+| a timed-out batch scans instead of bisecting; a forking worker survives one | 125 s |
+| enumeration commits once instead of 2541 times | 122 s |
+| a lone mutant gets `-x` even without a selection | **120 s** |
+
+**Six times faster, and none of it was schemata.** The first line is the important one: on
+a project with no `tests/__init__.py`, *no* coverage context resolved to a node id, so every
+run silently ran the whole suite. Everything else was hidden underneath that.
+
+The last fix is not only a speedup. **23 of 1000 mutants had been recorded `timeout` when
+they were plain `killed`** — caught early, then left running until they overran the
+whole-suite budget. The score does not move (a timeout counts as detected) but the report
+was wrong about how they died.
+
+#### Where the remaining time goes, and why it is a floor
+
+At 16 workers, **87% of all the work is whole-suite runs**, and there are only ~240 of them:
+
+| | runs | share of the work |
+| --- | --- | --- |
+| import-time mutants, whole suite | ~240 | 87% |
+| everything else | ~520 | 13% |
+
+An import-time mutant sits on a module body, a class attribute or a decorator. That code
+runs under **every** test, so no coverage data can narrow it and no batch can hold two of
+them. Each one costs a full 1.2 s run of flask's suite: 240 × 1.2 = **294 core-seconds**
+that are the measurement rather than overhead on it.
+
+Adding workers does not help, because the machine is already the limit:
+
+| workers | wall | worker-seconds | concurrency |
+| --- | --- | --- | --- |
+| 4 | 271.8 s | 1063 | 3.9x |
+| 8 | 182.9 s | 1403 | 7.7x |
+| 16 | 173.4 s | 2595 | 15.0x |
+
+Angelo scales almost perfectly at every level; **8 → 16 buys 5%**, because there are eight
+real cores and the second thread per core only shares one. Getting a 1000-mutant flask
+sample under a minute would mean not mutating import-time code at all — which is what
+mutmut's schemata design forces, and it changes what the score is a score *of*.
 
 ## Against mutmut and cosmic-ray
 

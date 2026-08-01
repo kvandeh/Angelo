@@ -62,10 +62,16 @@ pub struct Selection {
 }
 
 impl Selection {
-    pub fn whole_suite() -> Selection {
+    /// Every test, because this run could not name the ones that matter.
+    ///
+    /// `alone` still decides `-x`: a fallback runs more tests, not a different
+    /// kind of run, and one mutant is settled by its first failure whether the
+    /// run named its tests or not. Without this the fallback ran flask's whole
+    /// suite to the end after it had already caught the mutant.
+    pub fn whole_suite(alone: bool) -> Selection {
         Selection {
             test_ids: Vec::new(),
-            stop_at_first_failure: false,
+            stop_at_first_failure: alone,
             baseline_time: None,
         }
     }
@@ -114,7 +120,7 @@ impl Budget {
 
     /// The budget an unselected run gets, for the line printed before the run.
     pub fn whole_suite(&self) -> Duration {
-        self.for_selection(&Selection::whole_suite())
+        self.for_selection(&Selection::whole_suite(false))
     }
 }
 
@@ -222,11 +228,13 @@ pub fn run(
     cwd: &Path,
     timeout: Duration,
     selection: &Selection,
+    active: &str,
 ) -> Result<SuiteResult> {
     let started = Instant::now();
     let mut command = build_command(test_command, cwd)?;
     command
         .arg(format!("--junit-xml={JUNIT_FILE}"))
+        .env(crate::schemata::ACTIVE_VAR, active)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     selection.apply(&mut command);
@@ -439,7 +447,7 @@ mod tests {
     fn an_uncosted_run_still_pays_for_the_whole_suite() {
         let budget = Budget::new(Duration::from_secs(10), 3.0);
         assert_eq!(
-            budget.for_selection(&Selection::whole_suite()),
+            budget.for_selection(&Selection::whole_suite(false)),
             budget.whole_suite()
         );
         assert_eq!(budget.whole_suite(), Duration::from_secs(35));
@@ -506,7 +514,7 @@ mod tests {
     #[test]
     fn whole_suite_selection_adds_nothing() {
         let mut command = Command::new("pytest");
-        Selection::whole_suite().apply(&mut command);
+        Selection::whole_suite(false).apply(&mut command);
         assert_eq!(command.get_args().count(), 0);
     }
 }
