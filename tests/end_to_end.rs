@@ -29,10 +29,17 @@ impl Project {
         self
     }
 
+    /// The child's log level must not depend on where the suite is run from.
+    /// `CI` and `RUST_LOG` both outrank the default, and most tests here read
+    /// the commentary `log::info!` puts on stderr — so under GitHub Actions,
+    /// which exports `CI=true`, the default drops to `warn` and takes that
+    /// commentary away. `choose` covers those precedences in a unit test.
     fn angelo(&self, args: &[&str]) -> Run {
         let output = Command::new(env!("CARGO_BIN_EXE_angelo"))
             .args(args)
             .current_dir(&self.root)
+            .env_remove("CI")
+            .env_remove("RUST_LOG")
             .output()
             .expect("running angelo");
         Run {

@@ -142,17 +142,57 @@ impl Coverage {
     /// with what that node id cost. Contexts that cannot be resolved simply
     /// stay out, which costs a full-suite run rather than a wrong one.
     pub(crate) fn resolve_node_ids(&mut self, testcases: &[TestCase], root: &Path) {
+        // A context two different node ids both claim cannot be resolved: one
+        // of them would silently stand for the other, and a selection missing a
+        // test invents a survivor. Collected first, dropped after.
+        let mut ambiguous: HashSet<i64> = HashSet::new();
         for test in testcases {
-            let Some(context_id) = self.tests.get(&test.context_name()) else {
+            let Some(context_id) = self.context_id(&test.context_name()) else {
                 continue;
             };
             let Some(node_id) = test.node_id(root) else {
                 continue;
             };
-            self.node_ids.insert(*context_id, node_id);
-            // Parametrised cases collapse onto one context and one node id, and
-            // running that id runs every parameter, so their times add up.
-            *self.durations.entry(*context_id).or_default() += test.duration;
+            match self.node_ids.get(&context_id) {
+                Some(existing) if *existing != node_id => {
+                    ambiguous.insert(context_id);
+                }
+                // Parametrised cases collapse onto one context and one node id,
+                // and running that id runs every parameter, so their times add
+                // up rather than replace each other.
+                Some(_) => *self.durations.entry(context_id).or_default() += test.duration,
+                None => {
+                    self.node_ids.insert(context_id, node_id);
+                    *self.durations.entry(context_id).or_default() += test.duration;
+                }
+            }
+        }
+        for context_id in ambiguous {
+            self.node_ids.remove(&context_id);
+            self.durations.remove(&context_id);
+        }
+    }
+
+    /// The context id a dotted test name belongs to.
+    ///
+    /// The two halves of the map are named by different things. coverage.py
+    /// names a context after the test module's `__name__`; junit names a case
+    /// after the file's path. They agree only when the test directory is a
+    /// package. Without an `__init__.py` — which is how pytest projects are
+    /// usually laid out — `tests/test_app.py` imports as `test_app`, so
+    /// coverage says `test_app.test_x` where junit says `tests.test_app.test_x`
+    /// and an exact lookup matches **nothing at all**. On flask that left every
+    /// context unresolved, so every run fell back to the whole suite and test
+    /// selection quietly did nothing.
+    ///
+    /// Dropping leading segments until one matches is what makes them meet.
+    fn context_id(&self, dotted: &str) -> Option<i64> {
+        let mut rest = dotted;
+        loop {
+            if let Some(id) = self.tests.get(rest) {
+                return Some(*id);
+            }
+            rest = rest.split_once('.')?.1;
         }
     }
 
@@ -183,10 +223,11 @@ impl Coverage {
     /// be named exactly, running too many tests is slow, running too few would
     /// invent survivors.
     pub fn select(&self, mutants: &[&Mutant]) -> Selection {
+        let alone = mutants.len() == 1;
         let mut contexts = HashSet::new();
         for mutant in mutants {
             let Some(covering) = self.covering(mutant) else {
-                return Selection::whole_suite();
+                return Selection::whole_suite(alone);
             };
             contexts.extend(covering);
         }
@@ -197,20 +238,20 @@ impl Coverage {
         let mut baseline_time = Duration::ZERO;
         for context_id in contexts {
             let Some(node_id) = self.node_ids.get(&context_id) else {
-                return Selection::whole_suite();
+                return Selection::whole_suite(alone);
             };
             if test_ids.insert(node_id.clone()) {
                 baseline_time += self.durations.get(&context_id).copied().unwrap_or_default();
             }
         }
         if test_ids.is_empty() {
-            return Selection::whole_suite();
+            return Selection::whole_suite(alone);
         }
         let mut test_ids: Vec<String> = test_ids.into_iter().collect();
         test_ids.sort();
         Selection {
             test_ids,
-            stop_at_first_failure: mutants.len() == 1,
+            stop_at_first_failure: alone,
             baseline_time: Some(baseline_time),
         }
     }
@@ -246,7 +287,7 @@ impl Coverage {
         let covering: Vec<Option<&HashSet<i64>>> =
             mutants.iter().map(|mutant| self.covering(mutant)).collect();
         for name in failed_tests {
-            let context_id = self.tests.get(&normalize(name))?;
+            let context_id = &self.context_id(&normalize(name))?;
             let mut explained = false;
             for (index, covering) in covering.iter().enumerate() {
                 if covering.is_some_and(|tests| tests.contains(context_id)) {
@@ -434,6 +475,24 @@ mod tests {
         assert!(unresolved.select(&[&tested]).test_ids.is_empty());
     }
 
+    /// The fallback runs more tests, not a different kind of run: one mutant is
+    /// still settled by its first failure. Without this the whole suite ran to
+    /// the end after it had already caught the mutant, which on flask was 80%
+    /// of everything a run did.
+    #[test]
+    fn a_lone_mutant_stops_at_the_first_failure_even_without_a_selection() {
+        let coverage = with_node_ids(coverage());
+        let import_time = mutant(1, "calc.py", 6);
+        let second = mutant(2, "calc.py", 6);
+
+        assert!(coverage.select(&[&import_time]).stop_at_first_failure);
+        assert!(
+            !coverage
+                .select(&[&import_time, &second])
+                .stop_at_first_failure
+        );
+    }
+
     /// The budget for a run comes from this number, so a selection that names
     /// its tests must also cost them.
     #[test]
@@ -487,6 +546,84 @@ mod tests {
         coverage.resolve_node_ids(&cases, root);
         assert_eq!(coverage.node_ids[&7], "src/runner/worker.py::test_x");
         assert_eq!(coverage.durations[&7], Duration::from_millis(240));
+    }
+
+    /// The bug this is named after cost every flask run its test selection:
+    /// `tests/` has no `__init__.py`, so coverage.py knows the module as
+    /// `test_app` while junit calls it `tests.test_app`, and an exact lookup
+    /// matched none of the 371 contexts.
+    #[test]
+    fn a_test_directory_that_is_not_a_package_still_resolves() {
+        let mut coverage = Coverage::build(vec![CoverageRow {
+            file: "calc.py".to_string(),
+            context_id: 7,
+            // As coverage.py names it: the module's own __name__.
+            context: "worker.test_x".to_string(),
+            numbits: vec![0b0000_0100],
+        }]);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        coverage.resolve_node_ids(
+            &[TestCase {
+                // As junit names it: the path from the rootdir.
+                classname: "src.runner.worker".to_string(),
+                name: "test_x".to_string(),
+                failed: false,
+                duration: Duration::from_millis(120),
+            }],
+            root,
+        );
+        assert_eq!(coverage.node_ids[&7], "src/runner/worker.py::test_x");
+    }
+
+    /// Dropping segments could otherwise let one node id stand for a test in a
+    /// different file that happens to share a class name. Running too few tests
+    /// is the one failure that invents a survivor, so an ambiguous context
+    /// resolves to nothing and its mutants run everything.
+    #[test]
+    fn a_name_two_test_files_share_resolves_to_neither() {
+        let mut coverage = Coverage::build(vec![CoverageRow {
+            file: "calc.py".to_string(),
+            context_id: 7,
+            context: "Shared.test_x".to_string(),
+            numbits: vec![0b0000_0100],
+        }]);
+        // Resolution walks real paths, so this borrows two .py files the repo has.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let cases: Vec<TestCase> = ["demo.test_calculator.Shared", "demo.test_flags.Shared"]
+            .iter()
+            .map(|classname| TestCase {
+                classname: classname.to_string(),
+                name: "test_x".to_string(),
+                failed: false,
+                duration: Duration::from_millis(120),
+            })
+            .collect();
+
+        coverage.resolve_node_ids(&cases, root);
+        assert!(!coverage.node_ids.contains_key(&7));
+        assert!(!coverage.durations.contains_key(&7));
+    }
+
+    /// Attribution reads the same map from the other end: a failed node id has
+    /// to find the context that covers it, or a red batch bisects instead of
+    /// naming its killer.
+    #[test]
+    fn attribution_survives_the_same_mismatch() {
+        let mut coverage = Coverage::build(vec![CoverageRow {
+            file: "calc.py".to_string(),
+            context_id: 3,
+            context: "test_calc.test_add".to_string(),
+            numbits: vec![0b0000_0100], // line 2
+        }]);
+        coverage
+            .node_ids
+            .insert(3, "tests/test_calc.py::test_add".to_string());
+        let hit = mutant(1, "calc.py", 2);
+
+        let verdicts = coverage
+            .attribute(&[&hit], &["tests/test_calc.py::test_add".to_string()])
+            .expect("the failure names a member");
+        assert_eq!(verdicts, [(1, Status::Killed)]);
     }
 
     fn failing(node_ids: &[&str]) -> HashSet<String> {

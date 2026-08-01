@@ -14,6 +14,7 @@ use crate::mutate::{self, Mutant, Status};
 use crate::pytest::Budget;
 use crate::report::{self, Diagnostics, Phase, Progress};
 use crate::runner::TestRunner;
+use crate::schemata::Schemata;
 use crate::stryker;
 use crate::warm;
 
@@ -151,9 +152,12 @@ pub fn run(options: Options, bars: &MultiProgress) -> Result<ExitCode> {
     }
 
     let mut progress = Progress::new(bars, &testable);
+    let schemata = build_schemata(&config, &testable, &mut diagnostics)?;
     let batches = {
         let phase = Phase::counted(bars, "batching", testable.len());
-        let batches = batch::compose(testable, coverage, config.batch_size, || phase.tick());
+        let batches = compose_batches(testable, coverage, &config, schemata.as_ref(), || {
+            phase.tick()
+        });
         phase.done();
         batches
     };
@@ -183,6 +187,7 @@ pub fn run(options: Options, bars: &MultiProgress) -> Result<ExitCode> {
         test_command,
         budget,
         test_selection: config.test_selection,
+        schemata,
     };
     runner.run_all(&batches, coverage, workers, |outcome| {
         progress.print(&outcome);
@@ -249,6 +254,74 @@ impl Reports {
         }
         Ok(())
     }
+}
+
+/// Batch the hosted mutants apart from the spliced ones.
+///
+/// A batch runs on the schemata path only if **every** member is hosted, since
+/// one spliced member needs the file written and the re-import that comes with
+/// it. Mixing them therefore wastes the feature rather than sharing it: at two
+/// mutants in three hosted, a batch of eight is all-hosted about one time in
+/// forty, so nearly every batch would take the slow path. Splitting first makes
+/// every hosted batch a fast one, and puts them ahead of the rest so a worker
+/// switches paths once.
+fn compose_batches(
+    testable: Vec<Mutant>,
+    coverage: Option<&Coverage>,
+    config: &Config,
+    schemata: Option<&Schemata>,
+    placed: impl Fn(),
+) -> Vec<batch::Batch> {
+    let Some(schemata) = schemata else {
+        return batch::compose(testable, coverage, config.batch_size, None, &placed);
+    };
+    let (hosted, spliced): (Vec<Mutant>, Vec<Mutant>) = testable
+        .into_iter()
+        .partition(|mutant| schemata.hosts(mutant));
+    let mut batches = batch::compose(hosted, coverage, config.batch_size, Some(schemata), &placed);
+    batches.extend(batch::compose(
+        spliced,
+        coverage,
+        config.batch_size,
+        None,
+        &placed,
+    ));
+    batches
+}
+
+/// Compile every mutant into its file at once, if this platform can run the
+/// result honestly.
+///
+/// Schemata mean a run re-imports nothing, which is the whole saving and also
+/// the whole risk: nothing resets the process between mutants either. Only the
+/// fork worker gives each mutant a process no other mutant has touched, and
+/// `fork()` does not exist on Windows. Rather than leak state there, Windows
+/// keeps splicing, which re-imports and is slower and correct.
+fn build_schemata(
+    config: &Config,
+    mutants: &[Mutant],
+    diagnostics: &mut Diagnostics,
+) -> Result<Option<Schemata>> {
+    if !config.schemata {
+        return Ok(None);
+    }
+    if !cfg!(unix) || !config.warm_workers {
+        diagnostics.note(
+            "schemata off: they need the fork worker, which needs warm_workers and a platform \
+             with fork(). Mutants are spliced into the files instead",
+        );
+        return Ok(None);
+    }
+    let schemata = Schemata::build(Path::new("."), mutants)?;
+    diagnostics.fact(
+        "schemata",
+        format!(
+            "{} of {} mutants compiled in, the rest spliced",
+            schemata.hosted_count(),
+            mutants.len()
+        ),
+    );
+    Ok((!schemata.is_empty()).then_some(schemata))
 }
 
 fn enumerate(

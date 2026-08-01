@@ -28,11 +28,16 @@ pub struct WarmWorker {
     replies: Receiver<String>,
     runs: usize,
     recycle_after: usize,
+    /// Set the first time a reply says so; a worker either forks or it does not.
+    forks: bool,
 }
 
 pub struct WarmRun {
     pub result: SuiteResult,
     pub failed_tests: Vec<String>,
+    /// The worker ran this mutant in a child of its own, so nothing it did can
+    /// reach the next one.
+    pub forked: bool,
 }
 
 impl WarmWorker {
@@ -79,23 +84,37 @@ impl WarmWorker {
             replies,
             runs: 0,
             recycle_after,
+            forks: false,
         })
     }
 
+    /// Recycling exists to bound the state a purging worker accumulates. A
+    /// forking worker accumulates none — every mutant ran in a child that has
+    /// since died — so restarting it would only repay the warm-up for nothing.
     pub fn is_exhausted(&self) -> bool {
-        self.runs >= self.recycle_after
+        !self.forks && self.runs >= self.recycle_after
     }
 
-    pub fn run(&mut self, selection: &Selection, timeout: Duration) -> Result<WarmRun> {
+    /// `active` names the mutants the tree's schemata should switch on, empty
+    /// when the mutants were spliced into the files instead. Splicing is what
+    /// makes a re-import necessary, so it is also what decides `purge`.
+    pub fn run(
+        &mut self,
+        selection: &Selection,
+        timeout: Duration,
+        active: &str,
+    ) -> Result<WarmRun> {
         let request = format!(
-            "{{\"tests\":[{}],\"stop_at_first_failure\":{}}}\n",
+            "{{\"tests\":[{}],\"stop_at_first_failure\":{},\"mutants\":\"{active}\",\"purge\":{},\"timeout_ms\":{}}}\n",
             selection
                 .test_ids
                 .iter()
                 .map(|id| format!("\"{}\"", id.replace('\\', "/")))
                 .collect::<Vec<_>>()
                 .join(","),
-            selection.stop_at_first_failure
+            selection.stop_at_first_failure,
+            active.is_empty(),
+            timeout.as_millis(),
         );
         self.stdin
             .write_all(request.as_bytes())
@@ -103,11 +122,23 @@ impl WarmWorker {
         self.stdin.flush().context("flushing the warm worker")?;
         self.runs += 1;
 
-        match self.replies.recv_timeout(timeout) {
-            Ok(line) => parse_reply(&line),
+        // The worker enforces the same deadline itself and answers when it
+        // expires, so this one only has to catch a worker that stopped
+        // answering at all. Too tight and a live run is called a timeout, and a
+        // timeout counts as detected.
+        match self.replies.recv_timeout(timeout + Duration::from_secs(5)) {
+            Ok(line) => {
+                let run = parse_reply(&line)?;
+                self.forks |= run.forked;
+                Ok(run)
+            }
+            // A worker that never answered gives no guarantee about what it
+            // left behind, whatever it usually does, so this run does not count
+            // as forked and the caller retires it.
             Err(RecvTimeoutError::Timeout) => Ok(WarmRun {
                 result: SuiteResult::TimedOut,
                 failed_tests: Vec::new(),
+                forked: false,
             }),
             Err(RecvTimeoutError::Disconnected) => bail!("the warm worker died"),
         }
@@ -123,6 +154,15 @@ impl Drop for WarmWorker {
 
 /// Hand-rolled rather than pulling in serde_json for two fields.
 fn parse_reply(line: &str) -> Result<WarmRun> {
+    // The fork path kills a child that outran its deadline and says so, rather
+    // than going quiet and costing the whole worker.
+    if line.contains("\"timed_out\": true") || line.contains("\"timed_out\":true") {
+        return Ok(WarmRun {
+            result: SuiteResult::TimedOut,
+            failed_tests: Vec::new(),
+            forked: line.contains("\"forked\""),
+        });
+    }
     let exit_code = field(line, "\"exit_code\":")
         .and_then(|rest| {
             let digits: String = rest
@@ -152,6 +192,7 @@ fn parse_reply(line: &str) -> Result<WarmRun> {
     Ok(WarmRun {
         result: SuiteResult::Finished(exit_code),
         failed_tests: failed,
+        forked: line.contains("\"forked\""),
     })
 }
 
@@ -196,6 +237,21 @@ mod tests {
     #[test]
     fn rejects_a_reply_with_no_exit_code() {
         assert!(parse_reply("not json at all").is_err());
+    }
+
+    /// A child the worker killed on its own deadline. The verdict is a real
+    /// timeout, and the worker is still alive to take the next mutant.
+    #[test]
+    fn reads_a_timed_out_reply() {
+        let run = parse_reply(r#"{"exit_code": 0, "failed": [], "timed_out": true}"#).unwrap();
+        assert!(matches!(run.result, SuiteResult::TimedOut));
+    }
+
+    /// The driver reads this variable to decide whether the tree holds schemata
+    /// and, when it does, which mutants are live.
+    #[test]
+    fn the_driver_and_schemata_agree_on_the_variable() {
+        assert!(DRIVER.contains(&format!("ACTIVE_VAR = \"{}\"", crate::schemata::ACTIVE_VAR)));
     }
 
     /// pytest shares stdout with the protocol, so the prefix is load-bearing.

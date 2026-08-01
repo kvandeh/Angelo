@@ -10,6 +10,7 @@ mod mutate;
 mod pytest;
 mod report;
 mod runner;
+mod schemata;
 mod stryker;
 mod warm;
 

@@ -87,8 +87,15 @@ over a random sample, not a full census
 Measured on the demo: sampling 20 of 74 kept 10 from `calculator.py`, 6 from `flags.py`
 and 4 from `text.py`, spread across the pool roughly in proportion to each file's size.
 
-The shuffle is a small xorshift seeded from the current time, so **each run samples
-differently**. Re-sample by deleting `.angelo/` and running again.
+The shuffle is a small xorshift seeded from the clock, so **each run draws a different
+sample**. That is what makes it a sample: a fixed seed would study the same corner of the
+codebase every time and never learn anything about the rest, and two runs agreeing would
+mean nothing.
+
+!!! warning "Two sampled scores are not comparable"
+    A different draw is a different study. To judge one change against another — a
+    benchmark, or a `--fail-under` gate you want to hold still — keep `.angelo/` and
+    resume, which reuses the pool. Deleting it re-samples.
 
 ## Limits
 
