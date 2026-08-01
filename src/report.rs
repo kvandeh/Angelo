@@ -1,19 +1,32 @@
 use std::collections::HashMap;
 use std::env;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use log::Level;
 
 use crate::mutate::{Mutant, Status};
 use crate::runner::BatchOutcome;
 
-/// Past this many mutants a line each stops being a report and starts being a
-/// wall, so the lines collapse into one redrawn bar.
-const BAR_ABOVE: usize = 1000;
+/// How often any bar repaints. The cost of drawing then scales with the wall
+/// clock rather than with the pool size, which is exactly what a line per
+/// mutant got wrong: output must not get more expensive the more work there is.
+const REDRAW_HZ: u8 = 5;
 
 /// Characters of bar, chosen to leave room for the counts on an 80-column
 /// terminal.
 const BAR_WIDTH: usize = 36;
+
+/// The container every bar draws into, throttled and pointed at stderr.
+///
+/// stderr because stdout carries the report, and `indicatif` hides a bar
+/// outright when stderr is not a terminal, so a redirected or piped run emits
+/// no control characters at all.
+pub fn bars() -> MultiProgress {
+    MultiProgress::with_draw_target(ProgressDrawTarget::stderr_with_hz(REDRAW_HZ))
+}
 
 /// How a verdict reads on screen. Hand-rolled ANSI: four escape codes are less
 /// than a dependency costs, and `IsTerminal` has been in the standard library
@@ -78,44 +91,95 @@ fn colour_is_on() -> bool {
     })
 }
 
-/// Owns the live progress: one line per settled mutant, or one redrawn bar.
+/// One step of a run, drawn while it happens.
+///
+/// A phase whose size is known counts; one whose length is the whole question
+/// spins. The baseline is the longest single wait in a run and nobody can know
+/// how long a test suite takes, so it gets a spinner rather than a fake bar.
+pub struct Phase(ProgressBar);
+
+impl Phase {
+    pub fn counted(bars: &MultiProgress, what: &str, total: usize) -> Phase {
+        let bar = bars.add(ProgressBar::new(total as u64));
+        bar.set_style(
+            ProgressStyle::with_template(&format!(
+                "  {{prefix:<9}} [{{bar:{BAR_WIDTH}}}] {{percent:>3}}%  {{pos}}/{{len}}"
+            ))
+            .expect("a valid template")
+            .progress_chars("#>-"),
+        );
+        bar.set_prefix(what.to_string());
+        Phase(bar)
+    }
+
+    pub fn spinner(bars: &MultiProgress, what: &str) -> Phase {
+        let bar = bars.add(ProgressBar::new_spinner());
+        bar.set_style(
+            ProgressStyle::with_template("  {prefix:<9} {spinner} {msg} ({elapsed})")
+                .expect("a valid template"),
+        );
+        bar.set_prefix(what.to_string());
+        // A spinner has no work to count, so something else has to move it.
+        bar.enable_steady_tick(Duration::from_millis(1000 / REDRAW_HZ as u64));
+        Phase(bar)
+    }
+
+    pub fn say(&self, message: impl Into<String>) {
+        self.0.set_message(message.into());
+    }
+
+    pub fn tick(&self) {
+        self.0.inc(1);
+    }
+
+    /// Take the bar off the screen. The phase's one-line result is a `log`
+    /// record, so it obeys the verbosity rather than being drawn twice.
+    pub fn done(self) {
+        self.0.finish_and_clear();
+    }
+}
+
+/// The bar that watches mutants settle, and the counts it displays.
 pub struct Progress {
-    /// Empty in bar mode, which never prints a label and so never builds one.
+    bar: ProgressBar,
+    /// Empty unless `debug` is on, because building one costs a `to_string`
+    /// per mutant and nothing reads them at the default verbosity.
     labels: HashMap<i64, String>,
     total: usize,
     done: usize,
     detected: usize,
     survived: usize,
-    /// None means a line per mutant. Some is bar mode, holding the instant the
-    /// run started, which is the only thing an estimate can be built from.
-    bar_since: Option<Instant>,
-    /// Characters the last bar left behind, so they can be wiped.
-    drawn: usize,
 }
 
 impl Progress {
-    pub fn new(mutants: &[Mutant], show_loading: bool) -> Progress {
-        let bar = show_loading || mutants.len() > BAR_ABOVE;
+    pub fn new(bars: &MultiProgress, mutants: &[Mutant]) -> Progress {
+        let bar = bars.add(ProgressBar::new(mutants.len() as u64));
+        bar.set_style(
+            ProgressStyle::with_template(&format!(
+                "  {{prefix:<9}} [{{bar:{BAR_WIDTH}}}] {{percent:>3}}%  {{pos}}/{{len}}  {{msg}}"
+            ))
+            .expect("a valid template")
+            .progress_chars("#>-"),
+        );
+        bar.set_prefix("mutants");
         Progress {
-            labels: match bar {
-                true => HashMap::new(),
-                false => mutants.iter().map(|m| (m.id, m.to_string())).collect(),
+            labels: match log::log_enabled!(Level::Debug) {
+                true => mutants.iter().map(|m| (m.id, m.to_string())).collect(),
+                false => HashMap::new(),
             },
             total: mutants.len(),
             done: 0,
             detected: 0,
             survived: 0,
-            bar_since: bar.then(Instant::now),
-            drawn: 0,
+            bar,
         }
     }
 
     pub fn print(&mut self, outcome: &BatchOutcome) {
         let seconds = outcome.duration_ms as f64 / 1000.0;
-        let batch_note = if outcome.verdicts.len() > 1 {
-            format!("  [batch of {}]", outcome.verdicts.len())
-        } else {
-            String::new()
+        let batch_note = match outcome.verdicts.len() {
+            1 => String::new(),
+            size => format!("  [batch of {size}]"),
         };
         for (mutant_id, status) in &outcome.verdicts {
             self.done += 1;
@@ -125,94 +189,48 @@ impl Progress {
             if *status == Status::Survived {
                 self.survived += 1;
             }
-            if self.bar_since.is_some() {
-                continue;
+            if let Some(label) = self.labels.get(mutant_id) {
+                log::debug!(
+                    "[{}/{}] {label}  {}{batch_note}  ({seconds:.1}s)",
+                    self.done,
+                    self.total,
+                    status.as_str()
+                );
             }
-            let fallback = format!("mutant #{mutant_id}");
-            let label = self.labels.get(mutant_id).unwrap_or(&fallback);
-            println!(
-                "[{}/{}] {label}  {}{batch_note}  ({seconds:.1}s)",
-                self.done,
-                self.total,
-                Paint::of(*status).on(status.as_str())
-            );
         }
         if let Some(error) = &outcome.error {
             // "A run where every mutant dies almost instantly means a broken
-            // test command" is the loudest thing angelo has to say, and this is
-            // how it says it. The bar never swallows one.
-            self.erase();
-            println!("          {error}");
+            // test command" is the loudest thing angelo has to say. It goes
+            // through `log`, so it suspends the bar rather than smearing it.
+            log::warn!("{error}");
         }
-        self.redraw();
-    }
-
-    /// Leave the finished bar on screen and move off its line.
-    pub fn finish(&mut self) {
-        if self.drawn > 0 {
-            println!();
-            self.drawn = 0;
-        }
-    }
-
-    fn redraw(&mut self) {
-        let Some(started) = self.bar_since else {
-            return;
-        };
-        let line = bar_line(
+        self.bar.set_message(counts_message(
             self.done,
             self.total,
             self.detected,
             self.survived,
-            started.elapsed(),
-        );
-        // Measured before it is painted: `erase` wipes character by character,
-        // and escape codes take up none of the width they would be counted for.
-        self.drawn = line.chars().count();
-        print!("\r{}", painted(&line));
-        let _ = io::stdout().flush();
+            self.bar.elapsed(),
+        ));
+        self.bar.set_position(self.done as u64);
     }
 
-    fn erase(&mut self) {
-        if self.drawn == 0 {
-            return;
-        }
-        print!("\r{:width$}\r", "", width = self.drawn);
-        self.drawn = 0;
+    pub fn finish(&mut self) {
+        self.bar.finish_and_clear();
     }
 }
 
-/// The redrawn line. Pure, so the arithmetic gets a unit test rather than a
-/// screenshot.
-fn bar_line(
+/// The counts that ride alongside the bar. Pure, so the arithmetic gets a unit
+/// test rather than a screenshot.
+fn counts_message(
     done: usize,
     total: usize,
     detected: usize,
     survived: usize,
     elapsed: Duration,
 ) -> String {
-    let total = total.max(1);
-    let filled = BAR_WIDTH * done.min(total) / total;
     format!(
-        "  [{}{}] {:>3}%  {done}/{total}  detected {detected}  survived {survived}  ~{} left",
-        "#".repeat(filled),
-        "-".repeat(BAR_WIDTH - filled),
-        100 * done.min(total) / total,
+        "detected {detected}  survived {survived}  ~{} left",
         remaining(done, total, elapsed)
-    )
-}
-
-/// The bar's filled run in green. The line is built plain and painted after,
-/// so `bar_line` stays a pure string its unit test can measure.
-fn painted(line: &str) -> String {
-    let (Some(start), Some(end)) = (line.find('#'), line.rfind('#')) else {
-        return line.to_string();
-    };
-    format!(
-        "{}{}{}",
-        &line[..start],
-        Paint::Green.on(&line[start..=end]),
-        &line[end + 1..]
     )
 }
 
@@ -229,12 +247,65 @@ fn remaining(done: usize, total: usize, elapsed: Duration) -> String {
 }
 
 /// `2h05m`, `4m18s`, `43s`.
-fn compact(duration: Duration) -> String {
+pub fn compact(duration: Duration) -> String {
     let seconds = duration.as_secs();
     match (seconds / 3600, (seconds % 3600) / 60, seconds % 60) {
         (0, 0, seconds) => format!("{seconds}s"),
         (0, minutes, seconds) => format!("{minutes}m{seconds:02}s"),
         (hours, minutes, _) => format!("{hours}h{minutes:02}m"),
+    }
+}
+
+/// What the run has to tell the reader, gathered as it happens.
+///
+/// Collected once and rendered twice: on stderr while the run goes, and in the
+/// HTML report afterwards. A problem that only ever reached a terminal is a
+/// problem nobody can attach to a pull request.
+#[derive(Default)]
+pub struct Diagnostics {
+    problems: Vec<Problem>,
+    facts: Vec<(String, String)>,
+}
+
+pub struct Problem {
+    pub level: Level,
+    pub message: String,
+}
+
+impl Diagnostics {
+    /// Something that casts doubt on the score. Said now, and kept.
+    pub fn warn(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        log::warn!("{message}");
+        self.problems.push(Problem {
+            level: Level::Warn,
+            message,
+        });
+    }
+
+    /// Something the reader needs in order to read the score correctly, which
+    /// is not the same as something being wrong.
+    pub fn note(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        log::info!("{message}");
+        self.problems.push(Problem {
+            level: Level::Info,
+            message,
+        });
+    }
+
+    /// A run fact. Already said by the phase that produced it, so this only
+    /// records; a report you cannot reproduce is decoration.
+    pub fn fact(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.facts.push((name.into(), value.into()));
+    }
+
+    pub fn problems(&self) -> &[Problem] {
+        &self.problems
+    }
+
+    pub fn facts(&self) -> &[(String, String)] {
+        &self.facts
     }
 }
 
@@ -262,18 +333,21 @@ impl Summary {
         summary
     }
 
-    fn detected(&self) -> i64 {
+    pub fn detected(&self) -> i64 {
         self.detected
     }
 
     /// Error and untestable mutants are excluded, neither got a fair trial:
     /// one broke before pytest could judge it, the other was only ever going
     /// to be judged by a test that was already red.
-    fn scored(&self) -> i64 {
+    ///
+    /// This is also what the mutation-testing-report schema calls `valid`, so
+    /// the JSON report and stdout divide by the same number.
+    pub fn scored(&self) -> i64 {
         self.detected + self.survived
     }
 
-    fn score(&self) -> Option<f64> {
+    pub fn score(&self) -> Option<f64> {
         match self.scored() {
             0 => None,
             scored => Some(self.detected as f64 / scored as f64 * 100.0),
@@ -351,6 +425,11 @@ impl Gate {
     }
 }
 
+/// The report, on stdout, at every verbosity.
+///
+/// This is the program's output rather than commentary about it: two scripts in
+/// `scripts/` grep these very lines for the verdict counts, so `--verbosity
+/// error` must still print all of it.
 pub fn print_summary(counts: &[(String, i64)], survivors: &[Mutant]) -> Summary {
     let summary = Summary::of(counts);
 
@@ -460,27 +539,19 @@ mod tests {
         assert_eq!(summary.pending, 0, "untestable is settled, not pending");
     }
 
+    /// `indicatif` draws the bar now, but the counts beside it are still ours.
     #[test]
-    fn the_bar_fills_with_progress() {
-        let quarter = bar_line(250, 1000, 200, 50, Duration::from_secs(30));
-        assert!(quarter.contains(" 25%"), "{quarter}");
-        assert!(quarter.contains("250/1000"));
-        assert!(quarter.contains("detected 200  survived 50"));
-        assert_eq!(quarter.matches('#').count(), BAR_WIDTH / 4);
-        assert_eq!(quarter.matches('-').count(), BAR_WIDTH * 3 / 4);
-
-        let full = bar_line(1000, 1000, 900, 100, Duration::from_secs(120));
-        assert!(full.contains("100%"));
-        assert_eq!(full.matches('#').count(), BAR_WIDTH);
+    fn the_counts_beside_the_bar_read_correctly() {
+        let quarter = counts_message(250, 1000, 200, 50, Duration::from_secs(30));
+        assert_eq!(quarter, "detected 200  survived 50  ~1m30s left");
     }
 
     /// A run settles its mutants before the first redraw, and a scope that
     /// filtered everything out leaves nothing to divide by.
     #[test]
-    fn an_empty_or_finished_bar_does_not_divide_by_zero() {
-        assert!(bar_line(0, 0, 0, 0, Duration::ZERO).contains("  0%"));
-        assert!(bar_line(0, 0, 0, 0, Duration::ZERO).contains("~-- left"));
-        assert!(bar_line(9, 9, 9, 0, Duration::from_secs(1)).contains("~-- left"));
+    fn an_empty_or_finished_run_does_not_divide_by_zero() {
+        assert!(counts_message(0, 0, 0, 0, Duration::ZERO).contains("~-- left"));
+        assert!(counts_message(9, 9, 9, 0, Duration::from_secs(1)).contains("~-- left"));
     }
 
     /// 30 seconds bought 250 of 1000, so 750 want 90 more.
@@ -509,29 +580,28 @@ mod tests {
         assert_eq!(Paint::of(Status::Untestable), Paint::Dim);
     }
 
-    /// Painting the bar must not change what `erase` has to wipe, so with
-    /// colour off the line comes back identical rather than merely similar.
-    #[test]
-    fn painting_an_uncoloured_bar_changes_nothing() {
-        let line = bar_line(250, 1000, 200, 50, Duration::from_secs(30));
-        assert_eq!(painted(&line).len(), line.len() + escape_width(&line));
-    }
-
-    /// Under `cargo test` stdout is captured, so colour is normally off; run
-    /// with `--nocapture` from a terminal and it is on. The test has to hold
-    /// either way, so it asks how wide the escapes are rather than assuming.
-    fn escape_width(line: &str) -> usize {
-        match colour_is_on() && line.contains('#') {
-            true => Paint::Green.code().len() + "\x1b[0m".len(),
-            false => 0,
-        }
-    }
-
     #[test]
     fn durations_read_compactly() {
         assert_eq!(compact(Duration::from_secs(43)), "43s");
         assert_eq!(compact(Duration::from_secs(258)), "4m18s");
         assert_eq!(compact(Duration::from_secs(7523)), "2h05m");
+    }
+
+    /// A problem has to reach the report, not only the terminal it scrolled off.
+    #[test]
+    fn diagnostics_keep_what_they_say() {
+        let mut diagnostics = Diagnostics::default();
+        diagnostics.warn("the baseline is red");
+        diagnostics.note("41 mutants were sampled away");
+        diagnostics.fact("workers", "8");
+
+        assert_eq!(diagnostics.problems().len(), 2);
+        assert_eq!(diagnostics.problems()[0].level, Level::Warn);
+        assert_eq!(diagnostics.problems()[1].level, Level::Info);
+        assert_eq!(
+            diagnostics.facts(),
+            [("workers".to_string(), "8".to_string())]
+        );
     }
 
     /// The whole point of the flag: below fails, above passes.

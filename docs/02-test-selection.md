@@ -127,4 +127,4 @@ No published figure exists for this interaction, so the honest advice is to meas
   little test time to remove, which is why the 0.2 second row shows almost nothing.
   [Warm workers](03-warm-workers.md) attack the other half.
 - Parametrised tests collapse to their function, so the selection is a safe superset.
-- Requires coverage.py and the default pytest command.
+- Requires coverage.py and a `python -m pytest` test command.

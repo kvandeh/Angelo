@@ -19,6 +19,7 @@ same thing.
 * Every dependency must defend itself; see [Make each dependency defend itself](#make-each-dependency-defend-itself).
 * SQL, templates and tables live in files, not in string literals; see [Keep data in data files](#keep-data-in-data-files).
 * Comment the weird, not the obvious; see [Comment the weird, not the obvious](#comment-the-weird-not-the-obvious).
+* Results go to stdout, commentary goes to stderr; see [Logging](#settled-decisions).
 * Pure logic gets a unit test in the same file; see [Test the arithmetic, not just the workflow](#test-the-arithmetic-not-just-the-workflow).
 * A run where every mutant dies instantly is a broken test command, and no score is not a pass; see [Never trust a fast run](#never-trust-a-fast-run).
 * Bytecode caching silently fakes survivors; see [Never let Python reuse bytecode](#never-let-python-reuse-bytecode).
@@ -131,7 +132,7 @@ check turns a failed restore into an `error` verdict rather than a wrong one.
 
 ## Make each dependency defend itself
 
-Ten, and each one earns its place:
+Thirteen, and each one earns its place:
 
 | Dependency | For |
 | --- | --- |
@@ -139,11 +140,20 @@ Ten, and each one earns its place:
 | turso, tokio | the database, a settled decision |
 | ruff_python_parser, ruff_python_ast, ruff_text_size | the Python parser |
 | roxmltree | junit XML |
+| log, env_logger | levels, timestamps and `RUST_LOG`, which Rust has no standard library answer to |
+| indicatif | multi-phase bars, spinners, rate-limited redraws and TTY detection |
 
 `walkdir`, `tempfile` and `serde_json` were removed and hand-rolled instead: a recursive
 copy, `Drop` cleanup, and newline-joined lists. Reach for that outcome first. A new
 dependency needs a sentence in the pull request explaining what it does that a few lines
 here could not.
+
+The last three are the exception that proves the rule, and the reasoning is worth keeping:
+a level filter, a timestamp format, a `RUST_LOG` parser, a multi-bar, a spinner, an ETA and
+a throttled redraw is not "a few lines here", and hand-rolling all seven would have been
+worse-tested than the crates that already do it. **`serde_json` stays out regardless** —
+`src/stryker.rs` writes one fixed shape, which is a `format!` and an escape function, not a
+general serialiser.
 
 Dev-only scripts under `scripts/` are exempt. They are not in the binary and not in the
 wheel.
@@ -255,9 +265,20 @@ because each interpreter gets its own `sys.modules`.
 extension. `Config` is `#[serde(default)]`, so a file written by an older build still
 loads and new fields take their defaults — add fields freely.
 
+**Exclusion.** `paths` says what to mutate, `exclude` carves out what it cannot express:
+generated code, vendored code, one module that hangs. Hand-rolled globs — `**` for any run
+of segments including none, `*` within one name — matched against one path form only,
+forward slashes relative to the project root, the same shape `Mutant::coverage_file`
+produces, so a Windows backslash on either side cannot change the answer. `**` matching
+zero segments is what lets `**/migrations/**` turn away the directory itself, and an
+excluded directory is never descended into. The count is printed, because a silent
+exclusion quietly raises the score, and a pattern that matched nothing warns rather than
+errors — a typo is invisible otherwise. Filtering happens at enumeration, so `.angelo/`
+has to be deleted before a new pattern applies, the same rule as `--diff`.
+
 **CLI.** `init` writes `angelo.conf`. `exec` enumerates mutants into the database and then
 runs them (`--workers N`, `--init-only`, `--diff`, `--diff-base`, `--sample`,
-`--fail-under`). Re-running `exec` resumes `pending` rows; a fresh run means deleting
+`--fail-under`, `--report`, `--html-report`). `--verbosity` is global, so `init` gets it too. Re-running `exec` resumes `pending` rows; a fresh run means deleting
 `.angelo/`. `main` returns `ExitCode` rather than `()`, because the threshold needs an exit
 code that is not an error.
 
@@ -286,7 +307,7 @@ wrapped in coverage.py (`dynamic_context = test_function`, rcfile and data file 
 ImportOnly (runs alone) or Untested (survives with no run at all, `execution_id NULL`). A
 red batch attributes directly: a failed test kills the one member it covers. Anything
 unattributable — a timeout, a crash, a failure no member explains — bisects. With no
-coverage installed, or a non-default test command, batches are size 1 and everything still
+coverage installed, or a test command that is not `python -m pytest`, batches are size 1 and everything still
 works. First-fit composer in `batch.rs`, `batch_size` in config, default 8.
 
 **Test selection.** A run executes only the pytest node ids covering its batch, and a
@@ -339,13 +360,49 @@ every already-red node id. The rest are `untestable`. This **needs coverage and
 failing tests. Untested mutants are split off *first*, because a mutant no test executes
 survives without a run whether the baseline is green or red.
 
-**Progress.** Over 1000 mutants, or with `show_loading = true`, the line-per-mutant output
-collapses into one `\r`-redrawn bar. No dependency: a progress-bar crate buys nothing over
-a carriage return. `error` lines still print on their own line and the bar redraws
-underneath, because a broken test command is the loudest thing this tool has to say. The
-remaining-time estimate is a linear extrapolation and says `~`, since batching settles
-mutants in clumps and a red batch bisects into more runs. `bar_line` is pure and
-unit-tested; the drawing is not.
+**Logging.** `log` plus `env_logger`, and the one rule everything else follows: **results go
+to stdout, commentary goes to stderr.** `verdict-matrix.sh` and `bench-repo.sh` both grep the
+verdict counts out of a run, so the report is the program's *output* and prints at every
+verbosity; everything else is commentary a level can silence. `--verbosity` is global and
+takes `error`/`warn`/`info`/`debug`/`trace`. Precedence, highest first: the flag, `RUST_LOG`,
+the `CI` environment variable being set (which means `warn`), then `info`. `CI` replaced
+guessing from the platform, because GitHub Actions sets it on Windows and macOS runners too,
+and a Linux desktop is not a CI box. `logging::choose` is pure and unit-tested. The sink
+wraps `env_logger`'s in `MultiProgress::suspend`, but only after `matches()` says the record
+survives its level — suspending repaints every bar, and that cost must not sit in front of a
+filtered-out `trace!`.
+
+**Progress.** Every phase draws: parsing counts files, the baseline spins because nobody can
+know how long a suite takes, batching counts mutants, and the run counts mutants. `indicatif`
+owns the drawing, capped at **5 Hz**, so output cost scales with the wall clock and not with
+the pool — which is exactly what a line per mutant got wrong. `ProgressBar::inc` is the only
+thing on the hot path. The per-mutant verdict line still exists at `debug`, and building its
+labels is gated on `log_enabled!` because a `to_string` per mutant is not free. Bars draw on
+stderr and `indicatif` hides them off a TTY, so a piped run emits no control characters at
+all. An `error` verdict goes through `warn!` and therefore suspends the bar rather than
+smearing it, because a broken test command is the loudest thing this tool has to say. The
+remaining-time estimate is a linear extrapolation and says `~`, since batching settles mutants
+in clumps and a red batch bisects into more runs. `counts_message` is pure and unit-tested;
+the drawing is not. `show_loading` was removed — every run has a bar now — and an
+`angelo.conf` still naming it keeps loading, which is its own test.
+
+**Reports.** Two files, both **output and never a verdict**: writing one must not change what
+a run decided, which is what keeps `verdict-matrix.sh` agreeing with itself with the flags on.
+Both read from the database rather than from the run, so `--init-only`, a resumed `exec` and a
+run with nothing pending all produce one. `--report` writes the
+**mutation-testing-report schema** version 2 — the format StrykerJS, Stryker.NET, Stryker4s
+and muttest share — rather than a shape Angelo invented, which buys their viewers and is the
+documented route into SonarQube. Its statuses map onto ours exactly, including the split of
+`survived` into `Survived` and `NoCoverage` on `execution_id IS NULL`; `error` maps to
+`RuntimeError` rather than `CompileError` so a broken test command cannot export as a clean
+bill of health. Its score is `detected / valid`, which is `Summary::score` character for
+character, so nothing recomputes a number. Keys are relative and forward-slashed and there is
+**no `projectRoot`**, because downstream conversions strip a root by literal string match and
+a Windows root against forward-slashed keys silently strips nothing. Locations are 1-based
+with an exclusive end and columns counted in characters, all of which `Lines::position` owns
+and tests. `--html-report` writes one self-contained file per issue #1, plus a diagnostics
+panel above the score: `Diagnostics` collects every problem once, as it happens, so stderr and
+the report say the same things instead of each deciding separately.
 
 **Output.** The survivor list prints **above** the report, so the score is the last line
 on screen rather than five hundred survivors up. Verdicts carry colour through `Paint` in
@@ -445,7 +502,7 @@ Flat modules with one nested directory, the same shape as cargo-mutants.
 | --- | --- |
 | `src/main.rs` | clap definitions and dispatch, nothing else |
 | `src/exec.rs` | the exec workflow: enumerate, baseline, split, compose, run |
-| `src/config.rs` | angelo.conf, file discovery, `SKIP_DIRS` |
+| `src/config.rs` | angelo.conf, file discovery, `SKIP_DIRS`, `Sources` and the `exclude` globs |
 | `src/mutate.rs` | `Mutant` and `Status`, the operator table, enumeration |
 | `src/coverage.rs` | `Coverage`: coverage.py wrapping, numbits, classify/attribute/select |
 | `src/batch.rs` | `Batch` (`accepts`/`add`) and the first-fit composer |
@@ -454,7 +511,10 @@ Flat modules with one nested directory, the same shape as cargo-mutants.
 | `src/runner.rs` | `TestRunner` spawns a `Worker` per thread; `WorkerCopy`, `PatchedFiles`, `WarmWorker` |
 | `src/warm.rs` + `src/runner/worker.py` | the long-lived pytest host and its driver |
 | `src/db.rs` + `src/db/schema.sql` | turso, the only async file, and the schema |
-| `src/report.rs` | `Progress` (live lines or one redrawn bar) and `Summary` (scoring, unit-tested) |
+| `src/report.rs` | `Phase` and `Progress` (the bars), `Diagnostics`, and `Summary` (scoring, unit-tested) |
+| `src/logging.rs` | `Verbosity`, the level precedence rule, and the sink that writes through the bars |
+| `src/stryker.rs` | the mutation-testing-report schema, hand-rolled JSON |
+| `src/html.rs` + `src/html/template.html` | the self-contained HTML report |
 | `tests/end_to_end.rs` | the real binary against throwaway Python projects |
 | `pyproject.toml` | maturin's wheel recipe and the PyPI metadata |
 | `demo/` | a pytest project for manual runs |

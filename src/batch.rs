@@ -38,9 +38,20 @@ impl Batch {
 }
 
 /// First-fit: each mutant joins the first batch with room and no conflict.
-pub fn compose(mutants: Vec<Mutant>, coverage: Option<&Coverage>, batch_size: usize) -> Vec<Batch> {
+///
+/// `placed` is called once per mutant. Composing is not free — every mutant is
+/// tried against every open batch, and the disjointness check is over sets of
+/// test ids — so a large pool spends visible time here and something has to
+/// move on screen while it does.
+pub fn compose(
+    mutants: Vec<Mutant>,
+    coverage: Option<&Coverage>,
+    batch_size: usize,
+    placed: impl Fn(),
+) -> Vec<Batch> {
     let mut batches: Vec<Batch> = Vec::new();
     for mutant in mutants {
+        placed();
         let covering = coverage.map(|coverage| coverage.classify(&mutant));
         let Some(TestCoverage::Tested(covering)) = covering else {
             batches.push(Batch::solo(mutant));
@@ -105,25 +116,40 @@ mod tests {
 
     #[test]
     fn disjoint_tests_batch_together() {
-        let batches = compose(vec![mutant(1, 1), mutant(2, 2)], Some(&coverage()), 8);
+        let batches = compose(
+            vec![mutant(1, 1), mutant(2, 2)],
+            Some(&coverage()),
+            8,
+            || {},
+        );
         assert_eq!(sizes(&batches), [2]);
     }
 
     #[test]
     fn a_shared_test_is_a_conflict() {
-        let batches = compose(vec![mutant(1, 1), mutant(2, 3)], Some(&coverage()), 8);
+        let batches = compose(
+            vec![mutant(1, 1), mutant(2, 3)],
+            Some(&coverage()),
+            8,
+            || {},
+        );
         assert_eq!(sizes(&batches), [1, 1]);
     }
 
     #[test]
     fn import_time_mutants_run_alone() {
-        let batches = compose(vec![mutant(1, 5), mutant(2, 1)], Some(&coverage()), 8);
+        let batches = compose(
+            vec![mutant(1, 5), mutant(2, 1)],
+            Some(&coverage()),
+            8,
+            || {},
+        );
         assert_eq!(sizes(&batches), [1, 1]);
     }
 
     #[test]
     fn no_coverage_means_no_batching() {
-        let batches = compose(vec![mutant(1, 1), mutant(2, 2)], None, 8);
+        let batches = compose(vec![mutant(1, 1), mutant(2, 2)], None, 8, || {});
         assert_eq!(sizes(&batches), [1, 1]);
     }
 
@@ -140,7 +166,7 @@ mod tests {
                 .collect(),
         );
         let mutants = (1..=5).map(|i| mutant(i, i as u32)).collect();
-        let batches = compose(mutants, Some(&coverage), 2);
+        let batches = compose(mutants, Some(&coverage), 2, || {});
         assert_eq!(sizes(&batches), [2, 2, 1]);
     }
 }

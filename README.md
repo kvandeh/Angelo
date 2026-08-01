@@ -54,25 +54,15 @@ angelo exec      # enumerate mutants, then run them
 ```
 
 ```
-enumerated 74 mutants across 3 files
-9 mutants sit on lines no test executes, survived without a single run
-running 17 batches on 8 workers, covering tests only
-
-   killed: 46
- survived: 28
-    score: 62.2% (46/74 detected)
+16:20:04 INFO   enumerated 74 mutants across 3 files
+16:20:09 INFO   baseline green in 4.8s, timeout 14.5s for a whole-suite run, from its own tests for a selected one
+16:20:09 INFO   9 mutants sit on lines no test executes, survived without a single run
+16:20:09 INFO   running 17 batches on 16 workers, covering tests only
+  mutants   [############################--------]  78%  51/65  detected 34  survived 17  ~11s left
 
 survivors (changes your tests never noticed):
-  calculator.py:31 >= -> >
-  calculator.py:35 and -> or
-  text.py:22 lower -> upper
-```
-
-`exec` is resumable. Interrupt it and run it again to pick up where it stopped, or delete
-`.angelo/` to start fresh. Results live in `.angelo/angelo.db`, a plain SQLite file you can
-open with anything.
-
-## On a pull request
+  calculator.py:4 0.21 -> 1.21
+  calculator.py:24 < -> <=
 
 Mutate what the branch added, and fail if too much of it survived.
 
@@ -87,7 +77,34 @@ Mutate what the branch added, and fail if too much of it survived.
 could not be scored fails it too, because a tool that could not measure must never report
 success. See the [Quick Start](https://angelo.kcvdh.com/quick-start/).
 
-## Why it is fast
+**The report is output; everything above it is commentary.** The report goes to stdout and
+prints at every verbosity, so a script can read it. The timestamped lines and the bar go to
+stderr, and `--verbosity` turns them down.
+
+```bash
+angelo exec --verbosity warn      # error | warn | info | debug | trace
+```
+
+The default is `info`, or `warn` when the `CI` environment variable is set, because in CI
+nobody is watching it scroll past. `RUST_LOG` works too. Off a terminal the bar disappears
+by itself, so a piped run stays byte-clean.
+
+## Reports you can keep
+
+A run that only ever reached a terminal cannot be attached to a pull request.
+
+```bash
+angelo exec --html-report angelo.html   # one self-contained file, no network
+angelo exec --report angelo.json        # the mutation-testing-report schema
+```
+
+The JSON is not a shape Angelo invented. It is
+[`mutation-testing-report-schema`](https://github.com/stryker-mutator/mutation-testing-elements/tree/master/packages/report-schema)
+version 2, the format StrykerJS, Stryker.NET, Stryker4s and muttest all write, so Stryker's
+existing viewers and dashboards read an Angelo run without a converter. See
+[reports](https://angelo.kcvdh.com/07-reports/).
+
+## What mutation testing is
 
 Most of a mutation run is not testing. On one selected test, roughly 95% of the 327 ms
 goes to starting Python and importing pytest. Angelo attacks that from four directions:

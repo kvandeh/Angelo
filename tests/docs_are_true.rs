@@ -84,7 +84,16 @@ fn config_keys() -> BTreeSet<String> {
 /// The docs quote other tools' command lines too, so a line naming one of them
 /// is skipped rather than mined for angelo flags.
 const OTHER_TOOLS: &[&str] = &[
-    "cargo", "pip", "git ", "mutmut", "coverage", "pytest", "zensical", "bash", "uses:",
+    "cargo",
+    "pip",
+    "git ",
+    "mutmut",
+    "coverage",
+    "pytest",
+    "zensical",
+    "bash",
+    "uses:",
+    "benchmark.py",
 ];
 
 #[test]

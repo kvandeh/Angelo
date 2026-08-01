@@ -61,7 +61,7 @@ pub fn baseline(
     let data_file = angelo_dir.join("coverage.db");
 
     let wrapped = coverage_command(test_command, &rcfile);
-    let Some(wrapped) = wrapped.filter(|_| coverage_is_installed()) else {
+    let Some(wrapped) = wrapped.filter(|command| coverage_is_installed(&command[0])) else {
         let (duration, testcases) = pytest::run_baseline(project_root, test_command, &junit)?;
         return Ok(Baseline {
             duration,
@@ -105,6 +105,9 @@ fn failing_node_ids(testcases: &[TestCase], root: &Path) -> HashSet<String> {
 }
 
 impl Coverage {
+    /// Keys are forward-slashed, matching `Mutant::coverage_file`. coverage.py
+    /// records the platform's own form, so a Windows row arrives backslashed and
+    /// would otherwise match no mutant at all.
     pub(crate) fn build(rows: Vec<CoverageRow>) -> Coverage {
         let mut coverage = Coverage {
             lines: HashMap::new(),
@@ -115,17 +118,18 @@ impl Coverage {
         };
         for row in rows {
             let executed = lines_in(&row.numbits);
+            let file = row.file.replace('\\', "/");
             // Import time is a property of the row, not of each of its lines,
             // so the file is looked up once per row rather than once per line.
             if row.context.is_empty() {
                 coverage
                     .import_lines
-                    .entry(row.file)
+                    .entry(file)
                     .or_default()
                     .extend(executed);
                 continue;
             }
-            let lines = coverage.lines.entry(row.file).or_default();
+            let lines = coverage.lines.entry(file).or_default();
             for line in executed {
                 lines.entry(line).or_default().insert(row.context_id);
             }
@@ -294,20 +298,22 @@ fn coverage_command(test_command: &[String], rcfile: &Path) -> Option<Vec<String
     let [python, dash_m, pytest, rest @ ..] = test_command else {
         return None;
     };
-    if !(python == "python" && dash_m == "-m" && pytest == "pytest") {
+    if !(python.contains("python") && dash_m == "-m" && pytest == "pytest") {
         return None;
     }
-    let mut command: Vec<String> = ["python", "-m", "coverage", "run", "--rcfile"]
-        .map(String::from)
-        .to_vec();
+    let mut command = vec![python.clone()];
+    command.extend(["-m", "coverage", "run", "--rcfile"].map(String::from));
     command.push(rcfile.display().to_string());
     command.extend(["-m".to_string(), "pytest".to_string()]);
     command.extend(rest.iter().cloned());
     Some(command)
 }
 
-fn coverage_is_installed() -> bool {
-    Command::new("python")
+/// Asked of the interpreter that will run it. A virtualenv without coverage,
+/// probed through whichever `python` is on PATH, answers for the wrong one and
+/// the wrapped baseline then dies with no junit report.
+fn coverage_is_installed(python: &str) -> bool {
+    Command::new(python)
         .args(["-m", "coverage", "--version"])
         .output()
         .map(|output| output.status.success())
@@ -575,5 +581,78 @@ mod tests {
 
         let custom = ["pytest".to_string()];
         assert!(coverage_command(&custom, rcfile).is_none());
+    }
+
+    /// A venv names its interpreter by path, which `scripts/setup-extra.sh`
+    /// writes and `warm::hostable` already accepts. Demanding the bare word
+    /// dropped coverage, and with it batching, selection and the red-baseline
+    /// rules, on every project that follows the documented setup.
+    #[test]
+    fn wraps_an_interpreter_named_by_path() {
+        let rcfile = Path::new(".angelo/coveragerc");
+        let venv = ["/proj/.venv/bin/python", "-m", "pytest"].map(String::from);
+        let wrapped = coverage_command(&venv, rcfile).unwrap();
+        // The venv's own interpreter has to stay, or coverage runs elsewhere.
+        assert_eq!(wrapped[0], "/proj/.venv/bin/python");
+        assert_eq!(wrapped[1..5], ["-m", "coverage", "run", "--rcfile"]);
+        assert_eq!(wrapped[6..], ["-m", "pytest"]);
+
+        let windows = ["C:\\p\\.venv\\Scripts\\python.exe", "-m", "pytest"].map(String::from);
+        assert!(coverage_command(&windows, rcfile).is_some());
+    }
+
+    /// The fixture above is flat, where a slash mismatch cannot show up. Nested
+    /// files scored a fully covered project at 0% and exited 0.
+    #[test]
+    fn matches_coverage_recorded_with_backslashes() {
+        let coverage = Coverage::build(vec![
+            CoverageRow {
+                file: "src\\pkg\\mod.py".to_string(),
+                context_id: 1,
+                context: "test_mod.test_add".to_string(),
+                numbits: vec![0b0000_0100], // line 2
+            },
+            CoverageRow {
+                file: "src\\pkg\\mod.py".to_string(),
+                context_id: 0,
+                context: String::new(),
+                numbits: vec![0b0100_0000], // line 6, import time
+            },
+        ]);
+
+        let tested = mutant(1, "src/pkg/mod.py", 2);
+        assert!(matches!(
+            coverage.classify(&tested),
+            TestCoverage::Tested(_)
+        ));
+        let windows = mutant(2, "src\\pkg\\mod.py", 2);
+        assert!(matches!(
+            coverage.classify(&windows),
+            TestCoverage::Tested(_)
+        ));
+        assert!(matches!(
+            coverage.classify(&mutant(3, "src/pkg/mod.py", 6)),
+            TestCoverage::ImportOnly
+        ));
+        assert!(matches!(
+            coverage.classify(&mutant(4, "src/pkg/mod.py", 9)),
+            TestCoverage::Untested
+        ));
+    }
+
+    /// Selection reads the same map, so the mismatch also fell back to the whole
+    /// suite on every batch.
+    #[test]
+    fn selects_named_tests_for_a_nested_file() {
+        let coverage = with_node_ids(Coverage::build(vec![CoverageRow {
+            file: "src\\pkg\\mod.py".to_string(),
+            context_id: 1,
+            context: "test_mod.test_add".to_string(),
+            numbits: vec![0b0000_0100], // line 2
+        }]));
+
+        let mutant = mutant(1, "src/pkg/mod.py", 2);
+        let selection = coverage.select(&[&mutant]);
+        assert_eq!(selection.test_ids, ["test_calc.py::test_add"]);
     }
 }

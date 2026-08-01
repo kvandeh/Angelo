@@ -92,7 +92,7 @@ twenty one.
 
 ## Limits
 
-- Batching needs coverage.py and the default pytest command. Without them every batch has
+- Batching needs coverage.py and a `python -m pytest` test command. Without them every batch has
   one member, and Angelo still works.
 - Mutants that run at import time cannot be batched, because import time code executes
   under every test.
