@@ -11,6 +11,7 @@ same thing.
 
 ## Quick Reference
 
+* Never open a pull request yourself; push the branch and stop; see [Do not open the pull request](#do-not-open-the-pull-request).
 * Speed features must never change a verdict; see [The rule everything obeys](#the-rule-everything-obeys).
 * Write plain Rust: structs and impls, enums and match, derive, `?`; see [Write idiomatic Rust, not clever Rust](#write-idiomatic-rust-not-clever-rust).
 * No `unwrap()` in a logic path, `anyhow::Context` on every fallible boundary; see [Handle the weird case](#handle-the-weird-case).
@@ -27,6 +28,19 @@ same thing.
 * Do not purge `__main__`, and do not revisit subinterpreters; see [Two traps that already cost a day](#two-traps-that-already-cost-a-day).
 * Settled decisions, with the reasoning: [Settled decisions](#settled-decisions).
 * Module map: [Where the code lives](#where-the-code-lives).
+
+## Do not open the pull request
+
+Push the branch and stop there. **Opening the pull request is the maintainer's call**, and
+so is choosing its base. A branch that looks finished is not the same as a change somebody
+has decided to propose.
+
+Hand over the branch name, what it changes, and which checks actually ran. The description
+is the argument for a change rather than a summary of the diff, so a pull request opened on
+somebody's behalf puts words in their mouth on a public repository.
+
+Do it only when asked for it in that turn. Being asked once is not standing permission, and
+neither is having done it earlier in the same session.
 
 ## The rule everything obeys
 
