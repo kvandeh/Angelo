@@ -19,6 +19,9 @@ pub struct Database {
 }
 
 impl Database {
+    /// A half-written database opens fine and takes the schema, then fails on
+    /// the first query that walks a damaged page, so `open` probes before the
+    /// caller commits to a run.
     pub fn open(directory: &Path) -> Result<Self> {
         fs::create_dir_all(directory)
             .with_context(|| format!("creating {}", directory.display()))?;
@@ -34,10 +37,18 @@ impl Database {
             .block_on(connection.execute_batch(SCHEMA))
             .context("creating the schema")?;
 
-        Ok(Database {
+        let database = Database {
             runtime,
             connection,
-        })
+        };
+        database.mutant_count().map_err(|error| {
+            error.context(format!(
+                "reading {path}, which is damaged — most likely an interrupted \
+                 run left it half-written. Delete {} and run again.",
+                directory.display()
+            ))
+        })?;
+        Ok(database)
     }
 
     pub fn mutant_count(&self) -> Result<i64> {
@@ -52,6 +63,7 @@ impl Database {
     }
 
     pub fn insert_mutants(&self, mutants: &[Mutant]) -> Result<()> {
+        let batched = Batched::begin(self)?;
         for mutant in mutants {
             let file = mutant
                 .file
@@ -70,7 +82,7 @@ impl Database {
                 ),
             ))?;
         }
-        Ok(())
+        batched.commit()
     }
 
     /// Keep a random `keep` of the enumerated mutants and delete the rest.
@@ -80,8 +92,14 @@ impl Database {
     /// random sample of the whole codebase rather than a complete census of
     /// one arbitrary corner of it. Returns how many were dropped.
     ///
-    /// The shuffle is seeded from the current time, so re-running the same
-    /// project picks a different sample each time.
+    /// The shuffle is seeded from the clock, so **each run draws a different
+    /// sample**. That is what makes it a sample: a fixed seed would study the
+    /// same corner of the codebase every time and never learn anything about
+    /// the rest, and two runs agreeing would mean nothing.
+    ///
+    /// The cost is that two sampled scores are not comparable, so a benchmark
+    /// or a `--fail-under` gate wanting the same pool twice has to keep
+    /// `.angelo/` rather than re-enumerate.
     pub fn sample_down_to(&self, keep: usize) -> Result<usize> {
         let mut ids = self.all_ids()?;
         if ids.len() <= keep {
@@ -93,12 +111,14 @@ impl Database {
             ids.swap(index, (random.next() % (index as u64 + 1)) as usize);
         }
         let dropped = &ids[keep..];
+        let batched = Batched::begin(self)?;
         for id in dropped {
             self.runtime.block_on(
                 self.connection
                     .execute("DELETE FROM mutant WHERE id = ?", (*id,)),
             )?;
         }
+        batched.commit()?;
         Ok(dropped.len())
     }
 
@@ -165,6 +185,43 @@ impl Database {
         Ok(counts)
     }
 
+    /// Every mutant with whatever settled it, for the report files.
+    ///
+    /// `survivors()` is not enough for a report: the killed mutants are what
+    /// the score is made of, and a viewer showing only survivors cannot draw
+    /// one. Ordered by file and then by byte, because the line and column
+    /// lookup walks each file with a forward-only cursor.
+    pub fn all_mutants(&self) -> Result<Vec<Settled>> {
+        let mut rows = self.runtime.block_on(self.connection.query(
+            "SELECT m.id, m.file, m.line, m.byte_start, m.byte_end, m.original, m.replacement,
+                    m.status, m.execution_id, e.duration_ms, e.failed_tests
+             FROM mutant m
+             LEFT JOIN execution e ON e.id = m.execution_id
+             ORDER BY m.file, m.byte_start, m.id",
+            (),
+        ))?;
+        let mut settled = Vec::new();
+        while let Some(row) = self.runtime.block_on(rows.next())? {
+            let failed: String = row.get(10).unwrap_or_default();
+            settled.push(Settled {
+                mutant: Mutant {
+                    id: row.get(0)?,
+                    file: PathBuf::from(row.get::<String>(1)?),
+                    line: row.get::<i64>(2)? as u32,
+                    byte_start: row.get::<i64>(3)? as usize,
+                    byte_end: row.get::<i64>(4)? as usize,
+                    original: row.get(5)?,
+                    replacement: row.get(6)?,
+                },
+                status: Status::parse(&row.get::<String>(7)?),
+                executed: row.get::<Option<i64>>(8)?.is_some(),
+                duration_ms: row.get::<Option<i64>>(9).unwrap_or(None),
+                failed_tests: failed.lines().map(str::to_string).collect(),
+            });
+        }
+        Ok(settled)
+    }
+
     fn mutants_where(&self, condition: &str) -> Result<Vec<Mutant>> {
         let sql = format!(
             "SELECT id, file, line, byte_start, byte_end, original, replacement
@@ -185,6 +242,63 @@ impl Database {
         }
         Ok(mutants)
     }
+
+    fn statement(&self, sql: &str) -> Result<()> {
+        self.runtime
+            .block_on(self.connection.execute(sql, ()))
+            .with_context(|| format!("running {sql}"))?;
+        Ok(())
+    }
+}
+
+/// One commit for a whole loop of statements instead of one per row.
+///
+/// Enumerating flask writes 2541 rows and then deletes 1541 of them to make a
+/// 1000-mutant sample. Committing each of those on its own took **30 seconds**,
+/// which was a quarter of the entire run.
+///
+/// Rolls back on drop, so a loop that returns early with `?` leaves no half
+/// enumerated pool for the next `exec` to resume from.
+struct Batched<'a> {
+    database: &'a Database,
+    committed: bool,
+}
+
+impl<'a> Batched<'a> {
+    fn begin(database: &'a Database) -> Result<Batched<'a>> {
+        database.statement("BEGIN")?;
+        Ok(Batched {
+            database,
+            committed: false,
+        })
+    }
+
+    fn commit(mut self) -> Result<()> {
+        self.database.statement("COMMIT")?;
+        self.committed = true;
+        Ok(())
+    }
+}
+
+impl Drop for Batched<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            let _ = self.database.statement("ROLLBACK");
+        }
+    }
+}
+
+/// A mutant and the run that judged it, or the absence of one.
+pub struct Settled {
+    pub mutant: Mutant,
+    /// `None` means pending: still in the pool, never run.
+    pub status: Option<Status>,
+    /// Whether any pytest run actually executed this mutant. A `survived`
+    /// mutant with no execution is one no test covers, which is a different
+    /// finding from one a test ran and failed to notice.
+    pub executed: bool,
+    pub duration_ms: Option<i64>,
+    pub failed_tests: Vec<String>,
 }
 
 pub struct CoverageRow {
@@ -243,6 +357,7 @@ impl Xorshift {
     }
 }
 
+/// Seeded from the clock: the point of a sample is that it moves.
 pub fn get_random() -> Xorshift {
     let seed = SystemTime::now()
         .duration_since(UNIX_EPOCH)

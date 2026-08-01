@@ -4,20 +4,31 @@ mod coverage;
 mod db;
 mod diff;
 mod exec;
+mod html;
+mod logging;
 mod mutate;
 mod pytest;
 mod report;
 mod runner;
+mod schemata;
+mod stryker;
 mod warm;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+use crate::logging::Verbosity;
+
 #[derive(Parser)]
 #[command(name = "angelo", about = "Fast mutation testing for Python", version)]
 struct Cli {
+    /// How much a run says about itself. The report always prints; this is the
+    /// commentary around it (default: info, or warn when CI is set)
+    #[arg(long, value_enum, global = true, value_name = "LEVEL")]
+    verbosity: Option<Verbosity>,
     #[command(subcommand)]
     command: Command,
 }
@@ -49,11 +60,23 @@ enum Command {
         /// gate on it (default: 0, no threshold)
         #[arg(long, value_name = "PERCENT")]
         fail_under: Option<f64>,
+        /// Write the run here in the mutation-testing-report schema, the
+        /// format Stryker's viewers and dashboards read
+        #[arg(long, value_name = "PATH")]
+        report: Option<PathBuf>,
+        /// Write one self-contained HTML file here
+        #[arg(long, value_name = "PATH")]
+        html_report: Option<PathBuf>,
     },
 }
 
 fn main() -> Result<ExitCode> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    // Before anything that might log, and before the first bar is added.
+    let bars = report::bars();
+    logging::init(cli.verbosity, &bars)?;
+
+    match cli.command {
         Command::Init => {
             config::init()?;
             Ok(ExitCode::SUCCESS)
@@ -65,12 +88,19 @@ fn main() -> Result<ExitCode> {
             diff_base,
             sample,
             fail_under,
-        } => exec::run(exec::Options {
-            workers,
-            init_only,
-            scope: diff::Scope::from_flags(diff, diff_base),
-            sample,
-            fail_under,
-        }),
+            report,
+            html_report,
+        } => exec::run(
+            exec::Options {
+                workers,
+                init_only,
+                scope: diff::Scope::from_flags(diff, diff_base),
+                sample,
+                fail_under,
+                report,
+                html_report,
+            },
+            &bars,
+        ),
     }
 }

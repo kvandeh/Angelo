@@ -92,7 +92,7 @@ twenty one.
 
 ## Limits
 
-- Batching needs coverage.py and the default pytest command. Without them every batch has
+- Batching needs coverage.py and a `python -m pytest` test command. Without them every batch has
   one member, and Angelo still works.
 - Mutants that run at import time cannot be batched, because import time code executes
   under every test.
@@ -100,6 +100,22 @@ twenty one.
   that note before tuning `batch_size`.
 - A suite with heavy shared state produces unexplainable failures, which trigger splitting
   and erode the gain.
+- On the [schemata](08-schemata.md) path, two mutants of the **same function** conflict
+  however disjoint their tests are. One wrapper can only call one copy.
+- Raising `batch_size` past the default buys nothing on a real codebase. flask's
+  1000-mutant pool composes into 409 batches at 8 and **407 at 32**: the cap never binds,
+  conflict does.
+
+!!! warning "A suite that is not order-independent"
+    A batch runs the **union** of its members' tests, so a mutant is judged alongside tests
+    that would not otherwise have run. On a suite that leaks state between tests, that
+    changes answers. On flask, batch 8 and batch 1 disagree about **32 of 1000** mutants —
+    `os.environ` reads in `cli.py` and `helpers.py`, logging configuration in `logging.py` —
+    and they disagree by the same amount with schemata off, so this is batching itself and
+    not the newer path. No grouping strategy fixes it; the fault is in the suite. The
+    [verdict matrix](https://github.com/kvandeh/angelo/blob/main/scripts/verdict-matrix.sh)
+    guarantees agreement on a suite that *is* order-independent, which is the most any tool
+    can promise here.
 
 ## Related work
 

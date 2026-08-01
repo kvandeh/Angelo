@@ -65,10 +65,10 @@ run it again, and it picks up the pending mutants. To start over, delete `.angel
 ## Read the report
 
 ```
-enumerated 74 mutants across 3 files
-baseline green in 1.2s, timeout 7.4s for a whole-suite run, from its own tests for a selected one
-9 mutants sit on lines no test executes, survived without a single run
-running 17 batches on 8 workers, covering tests only
+16:20:04 INFO   enumerated 74 mutants across 3 files
+16:20:06 INFO   baseline green in 1.2s, timeout 7.4s for a whole-suite run, from its own tests for a selected one
+16:20:06 INFO   9 mutants sit on lines no test executes, survived without a single run
+16:20:06 INFO   running 17 batches on 8 workers, covering tests only
 
 survivors (changes your tests never noticed):
   calculator.py:31 >= -> >
@@ -148,20 +148,71 @@ sit outside the score, next to `error`.
     from a clean one. Angelo stops there and says so, because a confident 100 percent is
     worse than no answer.
 
-## Big runs draw a bar
+## Every phase draws a bar
 
-Past **1000 mutants**, a line each stops being a report and becomes a wall. Angelo collapses
-them into one redrawn line instead.
+A run has four waits, and each one shows something moving.
+
+| Phase | Shape |
+| --- | --- |
+| Parsing every source file | A bar, the file count is known |
+| The baseline suite under coverage | A spinner with the clock running |
+| Composing batches | A bar |
+| Running the mutants | A bar |
 
 ```
-  [#####################---------------]  60%  1954/3210  detected 1502  survived 452  ~4m18s left
+  mutants   [#####################---------------]  60%  1954/3210  detected 1502  survived 452  ~4m18s left
 ```
+
+The baseline spins rather than filling because **nobody can know how long a test suite
+takes** — that is the question it is asking. It is the longest single wait in a run, and it
+used to show nothing at all.
 
 The remaining time is a linear extrapolation and nothing better: batching settles mutants
-in clumps, and a batch that goes red costs several more runs while it bisects. Hence the
-`~`. Set `show_loading = true` to force the bar on a smaller project, in CI where
-scrollback costs money. `error` lines always print on their own line and the bar redraws
-underneath them.
+in clumps, and a batch that goes red costs several more runs while it bisects. Hence the `~`.
+
+**A bar costs nothing per mutant.** It repaints at most five times a second, so the cost
+scales with how long the run takes and not with how many mutants it has. That is the fix: a
+line per mutant got more expensive exactly when a run could least afford it.
+
+Off a terminal the bar disappears by itself, so a redirected or piped run emits no control
+characters at all.
+
+## Turn the commentary down
+
+**The report is output; everything else is commentary.** The report goes to stdout and
+prints at every verbosity — a script can rely on it. The timestamped lines and the bar go to
+stderr.
+
+```bash
+angelo exec --verbosity warn
+```
+
+| Level | Carries |
+| --- | --- |
+| `error` | Only what stopped a worker |
+| `warn` | A red baseline, untestable mutants, a sample, a pattern that matched nothing |
+| `info` | Phase transitions, and every mutant Angelo drops |
+| `debug` | A line per mutant, the way older versions always printed |
+| `trace` | The pytest command line and the node ids each run selected |
+
+The default is **`info`**, or **`warn` when the `CI` environment variable is set**, since in
+CI nobody is watching it scroll past. GitHub Actions sets `CI` on its Windows and macOS
+runners too, so this is the signal rather than the operating system. `CI=false` and `CI=0`
+turn it back off.
+
+`RUST_LOG` is honoured for anyone who wants per-module control. Precedence, highest first:
+`--verbosity`, then `RUST_LOG`, then `CI`, then `info`.
+
+## Keep the result
+
+```bash
+angelo exec --html-report angelo.html   # one self-contained file, opens with no network
+angelo exec --report angelo.json        # the mutation-testing-report schema, version 2
+```
+
+The JSON is a format that already exists rather than one Angelo invented, so Stryker's
+viewers and dashboards read an Angelo run directly. Both files are covered in
+[reports](07-reports.md).
 
 ## Make it faster or smaller
 
@@ -269,12 +320,15 @@ workers = 0                          # 0 means one per CPU core
 batch_size = 8                       # mutants per run, 1 disables batching
 test_selection = true                # run only covering tests
 warm_workers = true                  # keep a pytest process alive
-warm_recycle_after = 50              # restart it every N runs
+warm_recycle_after = 50              # restart it every N runs (purge path only)
+schemata = true                      # compile every mutant into its file at once;
+                                     # Unix only, needs warm_workers
 sample = 0                           # 0 keeps every mutant
 timeout_factor = 2.0                 # timeout is a run's own tests * this, plus 5s
 exclude = []                         # globs to leave alone
 fail_under = 0                       # 0 means no threshold, exit 1 below this score
-show_loading = false                 # force the progress bar under 1000 mutants
+report = ""                          # write the run here in the report schema, "" is off
+html_report = ""                     # write one self-contained HTML file here, "" is off
 ```
 
 Any field you leave out takes its default, so a config written by an older Angelo keeps
@@ -323,7 +377,7 @@ test failures are exit code 1, and those only warn.
 
 **"The baseline suite is red and Angelo cannot work around that here."** Your suite has
 failing tests *and* no way to route around them. Install `coverage`, keep the default
-`python -m pytest` test command, and leave `test_selection = true`.
+`python -m pytest` test command (a virtualenv's own interpreter counts), and leave `test_selection = true`.
 
 **Every mutant is `error`.** Your test command is probably wrong. Run it by hand first.
 

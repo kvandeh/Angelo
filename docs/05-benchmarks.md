@@ -117,11 +117,94 @@ rather than reported, because it compares two different tools.
 
 ### flask
 
-Skipped, and no longer for the reason given here before. Its suite is not green on this
-machine out of the box, which used to stop Angelo outright. A
-[red baseline now warns](quick-start.md#a-red-baseline-warns-rather-than-stops) and the
-mutants those tests cover come back `untestable`, so flask is measurable — it simply has
-not been measured yet.
+Now measured, and it is where four bugs were found. A 1000-mutant sample, 16 workers, a
+Ryzen 7 5800 (**8 physical cores**, 16 threads), enumeration included:
+
+| Fixed | Wall |
+| --- | --- |
+| — | 718 s |
+| coverage contexts resolve, so [selection](02-test-selection.md) works at all | 326 s |
+| a timed-out batch scans instead of bisecting; a forking worker survives one | 125 s |
+| enumeration commits once instead of 2541 times | 122 s |
+| a lone mutant gets `-x` even without a selection | **120 s** |
+
+**Six times faster, and none of it was schemata.** The first line is the important one: on
+a project with no `tests/__init__.py`, *no* coverage context resolved to a node id, so every
+run silently ran the whole suite. Everything else was hidden underneath that.
+
+The last fix is not only a speedup. **23 of 1000 mutants had been recorded `timeout` when
+they were plain `killed`** — caught early, then left running until they overran the
+whole-suite budget. The score does not move (a timeout counts as detected) but the report
+was wrong about how they died.
+
+#### Where the remaining time goes, and why it is a floor
+
+At 16 workers, **87% of all the work is whole-suite runs**, and there are only ~240 of them:
+
+| | runs | share of the work |
+| --- | --- | --- |
+| import-time mutants, whole suite | ~240 | 87% |
+| everything else | ~520 | 13% |
+
+An import-time mutant sits on a module body, a class attribute or a decorator. That code
+runs under **every** test, so no coverage data can narrow it and no batch can hold two of
+them. Each one costs a full 1.2 s run of flask's suite: 240 × 1.2 = **294 core-seconds**
+that are the measurement rather than overhead on it.
+
+Adding workers does not help, because the machine is already the limit:
+
+| workers | wall | worker-seconds | concurrency |
+| --- | --- | --- | --- |
+| 4 | 271.8 s | 1063 | 3.9x |
+| 8 | 182.9 s | 1403 | 7.7x |
+| 16 | 173.4 s | 2595 | 15.0x |
+
+Angelo scales almost perfectly at every level; **8 → 16 buys 5%**, because there are eight
+real cores and the second thread per core only shares one. Getting a 1000-mutant flask
+sample under a minute would mean not mutating import-time code at all — which is what
+mutmut's schemata design forces, and it changes what the score is a score *of*.
+
+## Against mutmut and cosmic-ray
+
+WSL Ubuntu, 16 cores, Python 3.12, twelve workers. Each tool mutates **one module** and
+runs **the same tests**, in the repository's own virtualenv, so the job is identical.
+Produced by `scripts/benchmark.py`.
+
+**Per-mutant seconds is the only column compared.** The operator sets differ, so the pools
+differ, so wall time compares two different jobs. The scores are each tool's own kill rate
+over its own pool and are printed side by side, never subtracted.
+
+| Repository | Module | Angelo | mutmut | cosmic-ray |
+| --- | --- | ---: | ---: | ---: |
+| fastapi | `fastapi/security/api_key.py` | **0.827 s** | did not run | 1.677 s |
+| thefuck | `thefuck/types.py` | **0.117 s** | did not run | 0.510 s |
+| graphify | `graphify/cluster.py` | **0.087 s** | 0.080 s | 0.535 s |
+
+**Angelo is 2.0x to 4.4x faster per mutant than cosmic-ray**, and level with mutmut on the
+one repository where mutmut runs at all.
+
+![Seconds per mutant, by tool and repository](img/bench-results.png)
+
+### What the other two did
+
+**cosmic-ray runs serially.** `worker-count = 12` under its `local` distributor produced
+one pytest process at a time throughout. That is most of the gap above, and it means the
+column measures cosmic-ray's default rather than its ceiling. Its fastapi row is a
+**timeout**: 179 of 183 mutants inside a 300 second budget, counted from its own session
+database rather than dropped.
+
+**mutmut ran on one repository of three.** On fastapi and thefuck it generates its mutants
+and then stops on its own sanity check — `Unable to force test failures` — without running
+any of them. A control run on **markupsafe** finishes 314 mutants in 5.9 s, so this is
+mutmut meeting these repositories rather than the harness misconfiguring it. Both are
+recorded rather than omitted: **a tool that produces no verdicts must not look fast.**
+
+### What this does not prove
+
+- One module per repository, not a whole codebase. A different module moves every number.
+- Single runs. `benchmark.py --repeats 3 --warmup` gives a median and was not used here.
+- mutmut's graphify score is 0.4% against Angelo's 29.0% on the same module. That is two
+  different pools, not a quality comparison, and it is exactly why the rule above exists.
 
 ## The allocation pass
 
@@ -211,7 +294,21 @@ because of this bug.
 bash scripts/verdict-matrix.sh          # the correctness gate, runs in CI
 bash scripts/setup-extra.sh             # a virtualenv per repository in extra/
 bash scripts/bench-repo.sh extra/click  # the feature matrix on a real project
+
+pip install -r scripts/requirements-bench.txt
+python scripts/benchmark.py --root extra --angelo target/release/angelo
 ```
+
+`scripts/benchmark.py` is the three-tool comparison: it writes `bench-results.md`,
+`bench-results.json` and `bench-results.png` in one command.
+
+```bash
+python scripts/benchmark.py --tools angelo,cosmic-ray   # skip a tool
+python scripts/benchmark.py --repeats 3 --warmup        # median of three
+```
+
+**mutmut needs `fork()`, so that script is Linux and macOS only.** On Windows it exits
+rather than print half a table.
 
 `extra/` holds gitignored shallow clones of click, flask, httpx, requests, fastapi and
 django.

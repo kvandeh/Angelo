@@ -11,6 +11,7 @@ same thing.
 
 ## Quick Reference
 
+* Never open a pull request yourself; push the branch and stop; see [Do not open the pull request](#do-not-open-the-pull-request).
 * Speed features must never change a verdict; see [The rule everything obeys](#the-rule-everything-obeys).
 * Write plain Rust: structs and impls, enums and match, derive, `?`; see [Write idiomatic Rust, not clever Rust](#write-idiomatic-rust-not-clever-rust).
 * No `unwrap()` in a logic path, `anyhow::Context` on every fallible boundary; see [Handle the weird case](#handle-the-weird-case).
@@ -19,6 +20,7 @@ same thing.
 * Every dependency must defend itself; see [Make each dependency defend itself](#make-each-dependency-defend-itself).
 * SQL, templates and tables live in files, not in string literals; see [Keep data in data files](#keep-data-in-data-files).
 * Comment the weird, not the obvious; see [Comment the weird, not the obvious](#comment-the-weird-not-the-obvious).
+* Results go to stdout, commentary goes to stderr; see [Logging](#settled-decisions).
 * Pure logic gets a unit test in the same file; see [Test the arithmetic, not just the workflow](#test-the-arithmetic-not-just-the-workflow).
 * A run where every mutant dies instantly is a broken test command, and no score is not a pass; see [Never trust a fast run](#never-trust-a-fast-run).
 * Bytecode caching silently fakes survivors; see [Never let Python reuse bytecode](#never-let-python-reuse-bytecode).
@@ -26,6 +28,19 @@ same thing.
 * Do not purge `__main__`, and do not revisit subinterpreters; see [Two traps that already cost a day](#two-traps-that-already-cost-a-day).
 * Settled decisions, with the reasoning: [Settled decisions](#settled-decisions).
 * Module map: [Where the code lives](#where-the-code-lives).
+
+## Do not open the pull request
+
+Push the branch and stop there. **Opening the pull request is the maintainer's call**, and
+so is choosing its base. A branch that looks finished is not the same as a change somebody
+has decided to propose.
+
+Hand over the branch name, what it changes, and which checks actually ran. The description
+is the argument for a change rather than a summary of the diff, so a pull request opened on
+somebody's behalf puts words in their mouth on a public repository.
+
+Do it only when asked for it in that turn. Being asked once is not standing permission, and
+neither is having done it earlier in the same session.
 
 ## The rule everything obeys
 
@@ -131,7 +146,7 @@ check turns a failed restore into an `error` verdict rather than a wrong one.
 
 ## Make each dependency defend itself
 
-Ten, and each one earns its place:
+Thirteen, and each one earns its place:
 
 | Dependency | For |
 | --- | --- |
@@ -139,11 +154,20 @@ Ten, and each one earns its place:
 | turso, tokio | the database, a settled decision |
 | ruff_python_parser, ruff_python_ast, ruff_text_size | the Python parser |
 | roxmltree | junit XML |
+| log, env_logger | levels, timestamps and `RUST_LOG`, which Rust has no standard library answer to |
+| indicatif | multi-phase bars, spinners, rate-limited redraws and TTY detection |
 
 `walkdir`, `tempfile` and `serde_json` were removed and hand-rolled instead: a recursive
 copy, `Drop` cleanup, and newline-joined lists. Reach for that outcome first. A new
 dependency needs a sentence in the pull request explaining what it does that a few lines
 here could not.
+
+The last three are the exception that proves the rule, and the reasoning is worth keeping:
+a level filter, a timestamp format, a `RUST_LOG` parser, a multi-bar, a spinner, an ETA and
+a throttled redraw is not "a few lines here", and hand-rolling all seven would have been
+worse-tested than the crates that already do it. **`serde_json` stays out regardless** —
+`src/stryker.rs` writes one fixed shape, which is a `format!` and an escape function, not a
+general serialiser.
 
 Dev-only scripts under `scripts/` are exempt. They are not in the binary and not in the
 wheel.
@@ -268,7 +292,7 @@ has to be deleted before a new pattern applies, the same rule as `--diff`.
 
 **CLI.** `init` writes `angelo.conf`. `exec` enumerates mutants into the database and then
 runs them (`--workers N`, `--init-only`, `--diff`, `--diff-base`, `--sample`,
-`--fail-under`). Re-running `exec` resumes `pending` rows; a fresh run means deleting
+`--fail-under`, `--report`, `--html-report`). `--verbosity` is global, so `init` gets it too. Re-running `exec` resumes `pending` rows; a fresh run means deleting
 `.angelo/`. `main` returns `ExitCode` rather than `()`, because the threshold needs an exit
 code that is not an error.
 
@@ -276,6 +300,9 @@ code that is not an error.
 current-thread tokio runtime and `block_on`; everything else in the codebase is sync.
 `mutant` and `execution` are separate tables, because one green batch attaches many mutants
 to a single execution row. `src/db.rs` also reads coverage.py's own SQLite file directly.
+Enumeration and sampling each run inside a `Batched`, which is `BEGIN`/`COMMIT` with a
+`Drop` that rolls back. One commit per row cost **30 s** on flask — 2541 inserts and then
+1541 deletes to make a 1000-mutant sample — which was a quarter of the whole run.
 
 **Mutants.** Token-level byte splices via `ruff_python_parser`: `parse_module(source)?
 .tokens()`, token kinds from `ruff_python_ast::token`. Splices that break the syntax are
@@ -297,16 +324,50 @@ wrapped in coverage.py (`dynamic_context = test_function`, rcfile and data file 
 ImportOnly (runs alone) or Untested (survives with no run at all, `execution_id NULL`). A
 red batch attributes directly: a failed test kills the one member it covers. Anything
 unattributable — a timeout, a crash, a failure no member explains — bisects. With no
-coverage installed, or a non-default test command, batches are size 1 and everything still
+coverage installed, or a test command that is not `python -m pytest`, batches are size 1 and everything still
 works. First-fit composer in `batch.rs`, `batch_size` in config, default 8.
 
+On the schemata path a batch has a **second** conflict: two mutants of one function. The
+generated wrapper calls one copy, so the second would never take effect and would be scored
+`survived`. `Schemata::host` names the function and `Batch` refuses a repeat, and the
+verdict-matrix fixture's `fee` exists to catch it — two mutable tokens on branches no single
+test covers together.
+
+**Batching is not free on a suite with global state**, and that is a property of the suite
+rather than of angelo. On flask, batch 8 and batch 1 disagree about 32 of 1000 mutants with
+schemata *off*, on the plain splice path: `os.environ` reads in `cli.py` and `helpers.py`,
+logging configuration in `logging.py`. A batch runs the union of its members' tests, so a
+mutant is judged alongside tests that would not otherwise have run, and a suite that leaks
+state between tests answers differently. Nothing angelo can group its way out of. The
+verdict matrix guards the claim on a suite that *is* order-independent, which is the most
+that can be guaranteed.
+
+Raising `batch_size` past 8 does nothing on a real project: flask's 1000-mutant pool
+composes into 409 batches at 8 and 407 at 32. The cap never binds — mutation conflict does.
+
 **Test selection.** A run executes only the pytest node ids covering its batch, and a
-single-mutant run adds `-x`. Node ids come from the baseline junit report
+single-mutant run adds `-x` — **including one that fell back to the whole suite**, which it
+did not until flask showed what that costs. A fallback runs more tests, not a different kind
+of run, and one mutant is still settled by its first failure. Without it a lone import-time
+mutant ran all 371 flask tests to the end after it had already been caught, and a run that
+overran the whole-suite budget doing so was recorded `timeout` rather than `killed`: 23 of
+1000 mutants were being told the wrong story about how they died. Node ids come from the
+baseline junit report
 (`classname`/`name`), resolved against disk because a dotted classname does not say where
 the module ends and the classes begin. Anything unresolvable, and any ImportOnly member,
 falls back to the whole suite: too many tests is merely slow, too few invents survivors.
 Selection and batching compete — a batch selects the union of its members' tests — but they
 stack to 7.7x on a 2 s suite.
+
+The two halves of the coverage map are **named by different things**, and matching them
+exactly matched nothing. coverage.py names a context after the test module's `__name__`;
+junit names a case after its path from the rootdir. They agree only when the test directory
+is a package, and a pytest project usually has no `tests/__init__.py`, so coverage says
+`test_app.test_x` where junit says `tests.test_app.test_x`. On flask that left all 371
+contexts unresolved, so **every** run silently fell back to the whole suite and selection
+did nothing at all — 718 s for 1000 mutants, against 125 s once `Coverage::context_id`
+started dropping leading segments until one matched. A name two junit cases both claim
+resolves to neither, because one node id standing for two tests would run too few.
 
 **Timeouts.** `Budget` in `pytest.rs` owns the arithmetic. A run that selected its tests is
 charged `their baseline time * timeout_factor + 5s`; a whole-suite run is charged the whole
@@ -317,6 +378,47 @@ interpreter start, imports and collection, none of which appear in a junit time,
 cold subprocess that any warm failure falls back to. **A timeout counts as detected, so a
 budget that is too tight invents kills rather than merely running slowly.** The verdict
 matrix fixture carries a deliberately hanging mutant for exactly this reason.
+
+A timeout is also the one outcome a batch does **not** bisect. Halving makes every half
+that still holds the hang wait out the whole budget again, so binary search pays for the
+hang once per level; one run per member pays for it once and lets the innocent members
+finish at their own speed, on their own smaller selections. On flask, timeouts were 55% of
+all the work a run did.
+
+**Schemata.** Every mutant of a file compiled into the file at once, each in its own copy
+of the function it belongs to, selected by `ANGELO_MUTANTS`. This is mutmut's design, and
+schemata — not `fork()` — are what make mutmut fast: splicing forces a re-import per
+mutant, and that re-import is 1 ms on a two-module project and **31 ms (2.76x)** on a
+63-module one. Fork alone was measured first and rejected: about **2x slower** than the
+purge, because a child repays pytest's per-session setup that a long-lived process
+amortises. Copies are made as *text* over the function's byte range, so nested functions
+and comprehensions come along without the generator understanding them; only the `def`
+name is rewritten. The original and the table are captured as **default arguments**,
+because a method's body cannot see its own class body, and `_angelo_cache` is a mutable
+default on purpose — one list per function, so resolving the live mutant is an integer
+compare rather than a scan of the batch on every call of somebody else's hot path.
+**A mutant that will not parse is left to the splice path**: spliced, `*args` to `/args` is
+one `error` verdict outside the score, but compiled in it breaks every other mutant in the
+file — it turned all 221 mutants of a flask run into errors, which reads exactly like a
+broken test command. Signatures are excluded for the same class of reason: a default
+argument runs at import. Batches are composed from hosted and spliced mutants
+**separately**, because one spliced member forces the whole batch to splice, and mixed at
+two-in-three hosted a batch of eight is all-hosted one time in forty. `src/schemata.rs`
+generates, `src/runner/angelo_rt.py` selects, `ANGELO_DUMP_SCHEMATA=<dir>` keeps a readable
+copy.
+
+**Fork workers.** Unix only, and the reason schemata are Unix only. The parent imports the
+project once through `--collect-only` and then never runs a mutant; each mutant runs in a
+forked child that dies with whatever it broke. `gc.freeze()` before the loop is
+**load-bearing** — the child inherits tens of thousands of tracked objects and the
+collector walking them dirties every copy-on-write page, which is what made plain fork lose;
+with it a child ran pytest in 26 ms against 40 ms in-process. mutmut calls `gc.freeze()` in
+exactly the same place. The parent owns the deadline and `killpg`s a hung child, so a hang
+no longer costs a worker restart, and `warm_recycle_after` does nothing here because
+nothing accumulates — the worker reports `forked` and angelo stops counting. **A worker
+that cannot fork purges regardless of what the caller asked**, which is slower and correct;
+`fork()` after a thread is undefined and 3.12+ warns, so `threading.active_count()` is
+checked after the warm-up, not before.
 
 **Warm workers.** Angelo's stand-in for `fork()`, default on. Each worker keeps one pytest
 process alive (`src/runner/worker.py`) and feeds it JSON lines. Between runs the driver
@@ -350,13 +452,49 @@ every already-red node id. The rest are `untestable`. This **needs coverage and
 failing tests. Untested mutants are split off *first*, because a mutant no test executes
 survives without a run whether the baseline is green or red.
 
-**Progress.** Over 1000 mutants, or with `show_loading = true`, the line-per-mutant output
-collapses into one `\r`-redrawn bar. No dependency: a progress-bar crate buys nothing over
-a carriage return. `error` lines still print on their own line and the bar redraws
-underneath, because a broken test command is the loudest thing this tool has to say. The
-remaining-time estimate is a linear extrapolation and says `~`, since batching settles
-mutants in clumps and a red batch bisects into more runs. `bar_line` is pure and
-unit-tested; the drawing is not.
+**Logging.** `log` plus `env_logger`, and the one rule everything else follows: **results go
+to stdout, commentary goes to stderr.** `verdict-matrix.sh` and `bench-repo.sh` both grep the
+verdict counts out of a run, so the report is the program's *output* and prints at every
+verbosity; everything else is commentary a level can silence. `--verbosity` is global and
+takes `error`/`warn`/`info`/`debug`/`trace`. Precedence, highest first: the flag, `RUST_LOG`,
+the `CI` environment variable being set (which means `warn`), then `info`. `CI` replaced
+guessing from the platform, because GitHub Actions sets it on Windows and macOS runners too,
+and a Linux desktop is not a CI box. `logging::choose` is pure and unit-tested. The sink
+wraps `env_logger`'s in `MultiProgress::suspend`, but only after `matches()` says the record
+survives its level — suspending repaints every bar, and that cost must not sit in front of a
+filtered-out `trace!`.
+
+**Progress.** Every phase draws: parsing counts files, the baseline spins because nobody can
+know how long a suite takes, batching counts mutants, and the run counts mutants. `indicatif`
+owns the drawing, capped at **5 Hz**, so output cost scales with the wall clock and not with
+the pool — which is exactly what a line per mutant got wrong. `ProgressBar::inc` is the only
+thing on the hot path. The per-mutant verdict line still exists at `debug`, and building its
+labels is gated on `log_enabled!` because a `to_string` per mutant is not free. Bars draw on
+stderr and `indicatif` hides them off a TTY, so a piped run emits no control characters at
+all. An `error` verdict goes through `warn!` and therefore suspends the bar rather than
+smearing it, because a broken test command is the loudest thing this tool has to say. The
+remaining-time estimate is a linear extrapolation and says `~`, since batching settles mutants
+in clumps and a red batch bisects into more runs. `counts_message` is pure and unit-tested;
+the drawing is not. `show_loading` was removed — every run has a bar now — and an
+`angelo.conf` still naming it keeps loading, which is its own test.
+
+**Reports.** Two files, both **output and never a verdict**: writing one must not change what
+a run decided, which is what keeps `verdict-matrix.sh` agreeing with itself with the flags on.
+Both read from the database rather than from the run, so `--init-only`, a resumed `exec` and a
+run with nothing pending all produce one. `--report` writes the
+**mutation-testing-report schema** version 2 — the format StrykerJS, Stryker.NET, Stryker4s
+and muttest share — rather than a shape Angelo invented, which buys their viewers and is the
+documented route into SonarQube. Its statuses map onto ours exactly, including the split of
+`survived` into `Survived` and `NoCoverage` on `execution_id IS NULL`; `error` maps to
+`RuntimeError` rather than `CompileError` so a broken test command cannot export as a clean
+bill of health. Its score is `detected / valid`, which is `Summary::score` character for
+character, so nothing recomputes a number. Keys are relative and forward-slashed and there is
+**no `projectRoot`**, because downstream conversions strip a root by literal string match and
+a Windows root against forward-slashed keys silently strips nothing. Locations are 1-based
+with an exclusive end and columns counted in characters, all of which `Lines::position` owns
+and tests. `--html-report` writes one self-contained file per issue #1, plus a diagnostics
+panel above the score: `Diagnostics` collects every problem once, as it happens, so stderr and
+the report say the same things instead of each deciding separately.
 
 **Output.** The survivor list prints **above** the report, so the score is the last line
 on screen rather than five hundred survivors up. Verdicts carry colour through `Paint` in
@@ -396,8 +534,11 @@ baseline comes out of `anyhow` on stderr.
 **Sampling.** `--sample N`, or `sample` in config. It **deletes the overflow rows**,
 because the sample *is* the study: the score is an estimate over a random draw from the
 whole pool, not a census of the first N. Fisher-Yates over the ids with a hand-rolled
-xorshift seeded by the pool size, so a re-run samples identically — reproducibility beats
-unpredictability here. Fresh enumeration only; resuming keeps the existing pool.
+xorshift **seeded from the clock, so each run draws a different sample** — a fixed seed
+would study the same corner of the codebase forever and two runs agreeing would mean
+nothing. The cost is that two sampled scores are not comparable, which is a real trap when
+benchmarking: keep `.angelo/` and resume to hold the pool still. Fresh enumeration only;
+resuming keeps the existing pool.
 
 **Diff mode.** Two flags answering two questions, held by `Scope` in `diff.rs`. `--diff
 [REV]`, default HEAD, is `git diff REV`: the revision against the working tree, which is
@@ -463,9 +604,13 @@ Flat modules with one nested directory, the same shape as cargo-mutants.
 | `src/diff.rs` | `Scope` (which lines are in play) and `ChangedLines`: git hunk parsing and the changed-line filter |
 | `src/pytest.rs` | `SuiteResult`, `Selection`, `TestCase` node ids, the pytest process |
 | `src/runner.rs` | `TestRunner` spawns a `Worker` per thread; `WorkerCopy`, `PatchedFiles`, `WarmWorker` |
-| `src/warm.rs` + `src/runner/worker.py` | the long-lived pytest host and its driver |
+| `src/warm.rs` + `src/runner/worker.py` | the long-lived pytest host, its fork and purge paths |
+| `src/schemata.rs` + `src/runner/angelo_rt.py` | every mutant compiled into its file, and the switch that picks one |
 | `src/db.rs` + `src/db/schema.sql` | turso, the only async file, and the schema |
-| `src/report.rs` | `Progress` (live lines or one redrawn bar) and `Summary` (scoring, unit-tested) |
+| `src/report.rs` | `Phase` and `Progress` (the bars), `Diagnostics`, and `Summary` (scoring, unit-tested) |
+| `src/logging.rs` | `Verbosity`, the level precedence rule, and the sink that writes through the bars |
+| `src/stryker.rs` | the mutation-testing-report schema, hand-rolled JSON |
+| `src/html.rs` + `src/html/template.html` | the self-contained HTML report |
 | `tests/end_to_end.rs` | the real binary against throwaway Python projects |
 | `pyproject.toml` | maturin's wheel recipe and the PyPI metadata |
 | `demo/` | a pytest project for manual runs |

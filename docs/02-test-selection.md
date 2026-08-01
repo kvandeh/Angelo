@@ -34,6 +34,22 @@ Angelo resolves this by walking prefixes and taking the longest one that exists 
 on disk. The test inventory comes from the junit report of the baseline run, which lists
 every test with its class name.
 
+**And the two names do not start in the same place.** coverage.py names a context after the
+test module's `__name__`; junit names a case after its path from the rootdir. They agree
+only when the test directory is a Python package, and most pytest projects have no
+`tests/__init__.py`, so `tests/test_app.py` imports as plain `test_app`:
+
+| Source | flask |
+| --- | --- |
+| coverage.py context | `test_appctx.test_basic_url_generation` |
+| junit `classname.name` | `tests.test_appctx.test_basic_url_generation` |
+
+Matching those exactly matched **0 of flask's 371 contexts**. Every run fell back to the
+whole suite and selection did nothing at all, silently — the run was correct, just eight
+times slower than it looked. So Angelo drops leading segments until one matches, and
+**refuses a name two junit cases both claim**: one node id standing for two tests would run
+too few of them, which is the one failure that invents a survivor.
+
 ```mermaid
 flowchart LR
     A[coverage contexts] --> C[match]
@@ -52,6 +68,12 @@ tool must never have.
 **A run judging a single mutant stops at the first failure.** Once one test has failed,
 the mutant is caught, and the rest of the suite has nothing left to say. A batch never
 stops early, because it needs to see every failure in order to attribute them.
+
+This applies to the fallback too, which it did not until flask showed the cost. A fallback
+runs *more tests*, not a different kind of run. Without `-x` a lone import-time mutant ran
+all 371 flask tests to the end after it had already been caught — and a run that overran
+the whole-suite budget while doing so was recorded `timeout` instead of `killed`. **23 of
+1000 mutants were being told the wrong story about how they died.**
 
 ## The budget follows the selection
 
@@ -127,4 +149,4 @@ No published figure exists for this interaction, so the honest advice is to meas
   little test time to remove, which is why the 0.2 second row shows almost nothing.
   [Warm workers](03-warm-workers.md) attack the other half.
 - Parametrised tests collapse to their function, so the selection is a safe superset.
-- Requires coverage.py and the default pytest command.
+- Requires coverage.py and a `python -m pytest` test command.

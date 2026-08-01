@@ -40,6 +40,16 @@ def untested(x):
     return x + 1
 
 
+# Two mutable tokens in one function, on branches no single test covers
+# together. Schemata put every mutant of a function behind one wrapper, and the
+# wrapper can only call one copy, so batching these two would leave the second
+# switched off and score it survived. Load-bearing, like `spin` below.
+def fee(kind, amount):
+    if kind == "flat":
+        return amount + 1
+    return amount * 2
+
+
 # `not` is the only mutable token here, and removing it spins forever.
 def spin(flag):
     while not flag:
@@ -48,11 +58,19 @@ def spin(flag):
 PY
 
 cat > "$WORK/project/test_calc.py" <<'PY'
-from calc import add, clamp, is_adult, scale, spin
+from calc import add, clamp, fee, is_adult, scale, spin
 
 
 def test_spin():
     assert spin(True)
+
+
+def test_fee_flat():
+    assert fee("flat", 10) == 11
+
+
+def test_fee_rate():
+    assert fee("rate", 10) == 20
 
 
 def test_add():
@@ -74,7 +92,7 @@ def test_clamp():
 PY
 
 run() {
-    local batch=$1 selection=$2 warm=$3
+    local batch=$1 selection=$2 warm=$3 schemata=$4
     rm -rf "$WORK/run" && cp -r "$WORK/project" "$WORK/run"
     cat > "$WORK/run/angelo.conf" <<EOF
 paths = ["."]
@@ -84,6 +102,7 @@ batch_size = $batch
 test_selection = $selection
 warm_workers = $warm
 warm_recycle_after = 10
+schemata = $schemata
 timeout_factor = 4.0
 EOF
     # `untestable` is exactly as wide as the summary's column, so it starts at
@@ -95,23 +114,30 @@ EOF
 }
 
 OLDPWD=$PWD
-echo "config                              verdicts"
+echo "config                                             verdicts"
 echo "--------------------------------------------------------------"
 
 baseline=""
 failed=0
+configurations=0
 for batch in 1 8; do
     for selection in true false; do
         for warm in true false; do
-            verdicts=$(run "$batch" "$selection" "$warm")
-            printf 'batch=%-2s selection=%-5s warm=%-5s  %s\n' \
-                "$batch" "$selection" "$warm" "$verdicts"
-            if [ -z "$baseline" ]; then
-                baseline="$verdicts"
-            elif [ "$verdicts" != "$baseline" ]; then
-                echo "  ^^ MISMATCH: expected '$baseline'"
-                failed=1
-            fi
+            # schemata do nothing without the fork worker and without a
+            # platform that has fork(), so on Windows both settings run the
+            # same path. Running both anyway costs one fixture and proves it.
+            for schemata in true false; do
+                verdicts=$(run "$batch" "$selection" "$warm" "$schemata")
+                printf 'batch=%-2s selection=%-5s warm=%-5s schemata=%-5s  %s\n' \
+                    "$batch" "$selection" "$warm" "$schemata" "$verdicts"
+                configurations=$((configurations + 1))
+                if [ -z "$baseline" ]; then
+                    baseline="$verdicts"
+                elif [ "$verdicts" != "$baseline" ]; then
+                    echo "  ^^ MISMATCH: expected '$baseline'"
+                    failed=1
+                fi
+            done
         done
     done
 done
@@ -125,4 +151,4 @@ if [ -z "$baseline" ] || [ "$baseline" = " " ]; then
     echo "FAIL: no verdicts produced at all"
     exit 1
 fi
-echo "PASS: all 8 configurations agree on $baseline"
+echo "PASS: all $configurations configurations agree on $baseline"

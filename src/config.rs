@@ -34,6 +34,10 @@ pub struct Config {
     pub warm_workers: bool,
     /// Restart that process every N runs, bounding accumulated state.
     pub warm_recycle_after: usize,
+    /// Compile every mutant of a file into the file at once and pick one with an
+    /// environment variable, so a run re-imports nothing. Needs the fork worker
+    /// to stay honest, so it does nothing where `fork()` does not exist.
+    pub schemata: bool,
     /// Cap the mutant pool at this many, dropping the rest at random.
     /// 0 = keep every mutant.
     pub sample: usize,
@@ -47,9 +51,11 @@ pub struct Config {
     /// Exit non-zero when the score comes in under this percentage, so CI can
     /// gate on it. 0 = no threshold.
     pub fail_under: f64,
-    /// Draw one redrawn progress bar instead of a line per mutant. Runs of more
-    /// than a thousand mutants do this anyway; this forces it at any size.
-    pub show_loading: bool,
+    /// Write the run to this path in the mutation-testing-report schema, the
+    /// format Stryker's viewers and dashboards read. Empty = off.
+    pub report: String,
+    /// Write one self-contained HTML file to this path. Empty = off.
+    pub html_report: String,
 }
 
 impl Default for Config {
@@ -62,11 +68,13 @@ impl Default for Config {
             test_selection: true,
             warm_workers: true,
             warm_recycle_after: 50,
+            schemata: true,
             sample: 0,
             timeout_factor: 2.0,
             exclude: Vec::new(),
             fail_under: 0.0,
-            show_loading: false,
+            report: String::new(),
+            html_report: String::new(),
         }
     }
 }
@@ -153,7 +161,14 @@ impl Sources {
     }
 }
 
+/// `paths` may name one module as readily as a directory.
 fn collect_python_files(dir: &Path, sources: &mut Sources) -> Result<()> {
+    if dir.is_file() {
+        if is_mutation_target(dir) && !sources.excludes.excludes(dir) {
+            sources.files.push(dir.to_path_buf());
+        }
+        return Ok(());
+    }
     for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry
             .with_context(|| format!("reading an entry of {}", dir.display()))?
@@ -232,7 +247,13 @@ impl Excludes {
         // Match one path form only: forward slashes, relative to the project
         // root, the same shape `Mutant::coverage_file` produces. A `./` prefix
         // and a Windows backslash must not change the answer.
-        let relative = forward_slashed(&path.strip_prefix(".").unwrap_or(path).to_string_lossy());
+        //
+        // Both are stripped from the normalised string rather than the `Path`,
+        // because a backslash is not a separator off Windows: `strip_prefix(".")`
+        // leaves `.\src\x.py` whole there, and the leading `.` then survives as
+        // its own segment and matches nothing.
+        let forward = forward_slashed(&path.to_string_lossy());
+        let relative = forward.strip_prefix("./").unwrap_or(&forward);
         let segments: Vec<&str> = relative.split('/').collect();
         let Some(pattern) = self
             .patterns
@@ -288,13 +309,13 @@ pub fn init() -> Result<()> {
     }
     let config = Config::detect();
     write(&config)?;
-    println!("wrote {CONFIG_FILE} (paths = {:?})", config.paths);
+    log::info!("wrote {CONFIG_FILE} (paths = {:?})", config.paths);
     Ok(())
 }
 
 pub fn load_or_init() -> Result<Config> {
     if !Path::new(CONFIG_FILE).exists() {
-        println!("no {CONFIG_FILE} found, generating one");
+        log::info!("no {CONFIG_FILE} found, generating one");
         let config = Config::detect();
         write(&config)?;
         return Ok(config);
@@ -321,6 +342,33 @@ mod tests {
         assert!(!is_mutation_target(Path::new("src/notes.txt")));
     }
 
+    /// Naming one module used to fail with "Not a directory (os error 20)".
+    #[test]
+    fn paths_may_name_a_single_file() {
+        let root = std::env::temp_dir().join(format!("angelo-cfg-{}", std::process::id()));
+        let package = root.join("pkg");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("mod.py"), "x = 1\n").unwrap();
+        fs::write(package.join("test_mod.py"), "def test(): pass\n").unwrap();
+
+        let mut sources = Sources {
+            files: Vec::new(),
+            excludes: Excludes::new(&[]),
+        };
+        collect_python_files(&package.join("mod.py"), &mut sources).unwrap();
+        assert_eq!(sources.files, [package.join("mod.py")]);
+
+        // A test file named directly is still not a mutation target.
+        let mut sources = Sources {
+            files: Vec::new(),
+            excludes: Excludes::new(&[]),
+        };
+        collect_python_files(&package.join("test_mod.py"), &mut sources).unwrap();
+        assert!(sources.files.is_empty());
+
+        fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn junk_and_test_dirs_are_skipped() {
         assert!(is_skipped(Path::new("project/__pycache__")));
@@ -336,7 +384,18 @@ mod tests {
         .expect("an older config must still parse");
         assert!(old.test_selection);
         assert_eq!(old.batch_size, 8);
-        assert!(!old.show_loading);
+        assert!(old.report.is_empty());
+        assert!(old.html_report.is_empty());
+    }
+
+    /// The other direction, and the one that bites: `show_loading` was removed
+    /// when every phase got a bar, and a config still naming it has to keep
+    /// working rather than failing to parse.
+    #[test]
+    fn a_config_naming_a_removed_field_still_loads() {
+        let stale: Config = toml::from_str("paths = [\".\"]\nshow_loading = true\n")
+            .expect("a config naming a dropped key must still parse");
+        assert_eq!(stale.paths, ["."]);
     }
 
     fn excluded(patterns: &[&str], path: &str) -> bool {

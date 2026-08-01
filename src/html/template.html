@@ -1,0 +1,165 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Angelo mutation report</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --panel: #f6f7f9;
+    --line: #e2e5ea;
+    --ink: #16191d;
+    --muted: #666e79;
+    --good: #1f9254;
+    --warn: #b8860b;
+    --bad: #c02626;
+    --dim: #8a919b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a;
+      --panel: #1c2024;
+      --line: #2c3238;
+      --ink: #e8eaed;
+      --muted: #98a1ad;
+      --good: #46c98a;
+      --warn: #e0b341;
+      --bad: #f0665f;
+      --dim: #737d89;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2.5rem 1.25rem 5rem;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 62rem; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 0.25rem; letter-spacing: -0.01em; }
+  h2 {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 2.5rem 0 0.75rem;
+  }
+  .sub { color: var(--muted); margin: 0 0 2rem; }
+  code, .mono {
+    font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.86em;
+  }
+
+  .score {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+    padding: 1.5rem 1.75rem;
+    border: 1px solid var(--line);
+    border-left: 6px solid var(--band);
+    border-radius: 10px;
+    background: var(--panel);
+  }
+  .score b { font-size: 3rem; font-weight: 650; color: var(--band); line-height: 1; }
+  .score span { color: var(--muted); }
+  .good { --band: var(--good); }
+  .warn { --band: var(--warn); }
+  .bad { --band: var(--bad); }
+  .none { --band: var(--dim); }
+
+  .wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 30rem; }
+  th, td {
+    text-align: left;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  th { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  td.file { white-space: normal; word-break: break-all; }
+
+  .problems { list-style: none; padding: 0; margin: 0; }
+  .problems li {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    padding: 0.7rem 0.9rem;
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--band);
+    border-radius: 8px;
+    background: var(--panel);
+    margin-bottom: 0.5rem;
+  }
+  .problems .tag {
+    flex: none;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: var(--band);
+    padding-top: 0.18rem;
+  }
+
+  .survivors { margin: 0; }
+  .survivors h3 {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin: 1.25rem 0 0.4rem;
+    font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+  }
+  .survivors ul { list-style: none; padding: 0; margin: 0; }
+  .survivors li {
+    padding: 0.28rem 0;
+    border-bottom: 1px solid var(--line);
+    font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Consolas, monospace;
+    font-size: 0.82rem;
+  }
+  .survivors .line { color: var(--muted); display: inline-block; min-width: 4rem; }
+  .survivors del { color: var(--bad); text-decoration: none; }
+  .survivors ins { color: var(--warn); text-decoration: none; }
+  .empty { color: var(--muted); font-style: italic; }
+  footer { margin-top: 3.5rem; color: var(--muted); font-size: 0.8rem; }
+  a { color: inherit; }
+</style>
+
+<main>
+  <h1>Mutation report</h1>
+  <p class="sub">Every line below is a change Angelo made to your code. A survivor is one your tests did not notice.</p>
+
+  <div class="score {{SCORE_BAND}}">
+    <b>{{SCORE}}</b>
+    <span>{{SCORE_DETAIL}}</span>
+  </div>
+
+  {{PROBLEMS}}
+
+  <h2>Counts</h2>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>Verdict</th><th class="n">Mutants</th><th>Counts toward the score</th></tr></thead>
+      <tbody>{{COUNT_ROWS}}</tbody>
+    </table>
+  </div>
+
+  <h2>Per file, worst first</h2>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>File</th><th class="n">Mutants</th><th class="n">Survived</th><th class="n">Score</th></tr></thead>
+      <tbody>{{FILE_ROWS}}</tbody>
+    </table>
+  </div>
+
+  <h2>Survivors</h2>
+  <div class="survivors">{{SURVIVORS}}</div>
+
+  <h2>Run facts</h2>
+  <div class="wrap">
+    <table><tbody>{{FACT_ROWS}}</tbody></table>
+  </div>
+
+  <footer>
+    Written by <a href="https://github.com/kvandeh/angelo">Angelo</a> {{VERSION}}.
+    The score is <span class="mono">(killed + timeout) / (killed + timeout + survived)</span>;
+    errored and untestable mutants sit outside it because neither got a fair trial.
+  </footer>
+</main>
