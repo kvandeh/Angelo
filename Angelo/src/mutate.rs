@@ -79,7 +79,28 @@ impl Status {
             Status::Untestable => "Ignored",
         }
     }
+
+    /// The SonarQube rule id this verdict raises, if it raises one.
+    ///
+    /// Only survivors are findings a developer can act on in their own code. A
+    /// `killed` mutant is the suite working; an `error` or `untestable` one is
+    /// Angelo reporting on itself, and a broken splice is not a smell in
+    /// somebody's file. **That is why a run has to be gated on `--fail-under`
+    /// and not on this**: a run where everything errored raises nothing at all,
+    /// and an empty issue list reads as a clean bill of health.
+    pub fn sonar_rule(self, executed: bool) -> Option<&'static str> {
+        match self {
+            Status::Survived if executed => Some(SURVIVED_RULE),
+            Status::Survived => Some(NO_COVERAGE_RULE),
+            Status::Killed | Status::Timeout | Status::Error | Status::Untestable => None,
+        }
+    }
 }
+
+/// A test runs the line and asserts nothing about it.
+pub const SURVIVED_RULE: &str = "MutantSurvived";
+/// No test runs the line at all.
+pub const NO_COVERAGE_RULE: &str = "MutantNoCoverage";
 
 impl Mutant {
     /// Splice this mutant into the source, in place. A batch is applied back to

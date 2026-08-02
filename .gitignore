@@ -1,5 +1,7 @@
-/target
-/dist
+# target/ rather than /target: the crate builds in Angelo/target and the
+# SonarQube plugin builds in integrations/sonarqube/target.
+target/
+dist/
 .angelo/
 __pycache__/
 .pytest_cache/

@@ -56,6 +56,9 @@ pub struct Config {
     pub report: String,
     /// Write one self-contained HTML file to this path. Empty = off.
     pub html_report: String,
+    /// Write the survivors to this path in SonarQube's generic issue import
+    /// format. Empty = off.
+    pub sonar_report: String,
 }
 
 impl Default for Config {
@@ -75,6 +78,7 @@ impl Default for Config {
             fail_under: 0.0,
             report: String::new(),
             html_report: String::new(),
+            sonar_report: String::new(),
         }
     }
 }

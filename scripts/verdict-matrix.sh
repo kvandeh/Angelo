@@ -10,7 +10,23 @@
 # so the hanging mutant is load-bearing and not merely decorative.
 set -uo pipefail
 
-ANGELO=${ANGELO:-./target/release/angelo}
+ANGELO=${ANGELO:-./Angelo/target/release/angelo}
+
+# Prove the binary runs before blaming an optimisation for anything. Without
+# this the failure mode is a screen of empty verdicts under the headline "an
+# optimisation changed the verdicts", which points at the wrong thing entirely.
+#
+# The way it actually happens: building the wheel locally through the maturin
+# container mounts the repository and writes into the same Angelo/target, so a
+# Linux `angelo` lands beside the Windows `angelo.exe` and wins the lookup.
+# Give the container its own CARGO_TARGET_DIR if you are doing that.
+if ! "$ANGELO" --version >/dev/null 2>&1; then
+    echo "Cannot run $ANGELO."
+    echo "Build it first:  cargo build --release --manifest-path Angelo/Cargo.toml"
+    ls -l "$(dirname "$ANGELO")"/angelo* 2>/dev/null
+    exit 1
+fi
+
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
