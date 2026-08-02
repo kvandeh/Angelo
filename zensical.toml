@@ -9,9 +9,14 @@ repo_name = "kvandeh/angelo"
 # The social icons carry the links, so the text does not repeat them.
 copyright = "Written and owned by <strong>Kieran van der Heijde</strong>"
 
+# Two routes first, then the notes. A numbered page is a note in the
+# abstract/background/method/result/limits shape; an un-numbered page is a
+# route. The two routes sit adjacent and ungrouped so both are visible at first
+# paint -- hiding either one behind a click defeats the split.
 nav = [
   { "Home" = "index.md" },
-  { "Quick Start" = "quick-start.md" },
+  { "Run it locally" = "quick-start.md" },
+  { "Integrations" = "integrations.md" },
   { "Batch mutating" = "01-batch-mutating.md" },
   { "Test selection" = "02-test-selection.md" },
   { "Warm workers" = "03-warm-workers.md" },
@@ -21,6 +26,7 @@ nav = [
   { "Operators and sampling" = "06-operators-and-sampling.md" },
   { "Reports" = "07-reports.md" },
   { "SonarQube" = "09-sonarqube.md" },
+  { "The SonarQube plugin" = "10-sonar-plugin.md" },
   { "Support" = "support.md" },
 ]
 

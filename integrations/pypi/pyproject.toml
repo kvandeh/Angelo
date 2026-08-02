@@ -12,11 +12,17 @@ build-backend = "maturin"
 [tool.maturin]
 # Not inferred reliably, so it is stated. Without it maturin looks for pyo3.
 bindings = "bin"
+# The crate lives beside this recipe rather than under it, so maturin is told
+# where it is instead of being run from the crate directory.
+manifest-path = "../../Angelo/Cargo.toml"
 
 [project]
 name = "angelo"
 dynamic = ["version"]
 description = "Fast mutation testing for Python: one Rust binary that drives an ordinary pytest suite"
+# A page of its own rather than the repository's README. PyPI renders no
+# relative links, so the front page's table of links to docs/ would be dead on
+# arrival, and a path outside this directory is not portable across backends.
 readme = "README.md"
 authors = [{ name = "Kieran van der Heijde" }]
 keywords = ["mutation-testing", "pytest", "testing", "coverage"]

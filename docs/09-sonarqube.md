@@ -15,7 +15,7 @@ again.
 | Path | Mechanism | Verdict |
 | --- | --- | --- |
 | **Generic issue import** | `sonar.externalIssuesReportPaths` points at a JSON file of issues | **This one.** No plugin, no Java, works on Community Build and on Cloud |
-| **A SonarQube plugin** | A Java plugin declaring `Metrics` and a `MeasureComputer` — the only way to get a real *metric*, with history and a quality-gate condition on the number | **Deferred.** A separate Java repository, per-version compatibility work, and third-party plugins do not run on SonarQube Cloud at all |
+| **A SonarQube plugin** | A Java plugin declaring `Metrics` — the only way to get a real *metric*, with history and a quality-gate condition on the number | **Built**, and it lives in `integrations/sonarqube/`. Self-hosted only: third-party plugins do not run on SonarQube Cloud at all. See [the plugin](10-sonar-plugin.md) |
 | **Emit Pitest `mutations.xml`** and reuse the existing Mutation Analysis plugin | — | **Dead end** |
 
 The third one looks like a free win and is not. The plugin registers only
@@ -98,8 +98,8 @@ reporting on itself, and a splice that broke the syntax is not a smell in somebo
 
 Four fields are easy to get subtly wrong, and each one fails *silently* rather than erroring.
 Each is therefore a unit test in
-[`src/sonar.rs`](https://github.com/kvandeh/angelo/blob/main/src/sonar.rs), and the same four
-in [`src/stryker.rs`](https://github.com/kvandeh/angelo/blob/main/src/stryker.rs) for the jq
+[`src/sonar.rs`](https://github.com/kvandeh/angelo/blob/main/Angelo/src/sonar.rs), and the same four
+in [`src/stryker.rs`](https://github.com/kvandeh/angelo/blob/main/Angelo/src/stryker.rs) for the jq
 route.
 
 | Requirement | Why | Failure mode |
@@ -184,10 +184,11 @@ Two things guard it, and both are needed:
 
 ## Limits
 
-- **No mutation score reaches SonarQube.** Generic import creates *issues*, and a percentage
-  would be a *measure*. There is no import path for measures — `api/custom_measures` was
-  removed in 8.2 — so a real metric needs the plugin path, and that is impossible on
-  SonarQube Cloud. The score stays in the terminal, the exit code and the HTML report.
+- **No mutation score reaches SonarQube through this route.** Generic import creates
+  *issues*, and a percentage would be a *measure*. There is no import path for measures —
+  `api/custom_measures` was removed in 8.2 — so the score needs
+  [the plugin](10-sonar-plugin.md), which is self-hosted only. On Cloud the score stays in
+  the terminal, the exit code and the HTML report.
 - **External issues cannot be managed in quality profiles.** They do not appear on the Rules
   page, they cannot be marked false positive in Sonar, and they cannot be filtered out of a
   generic "new issues > 0" gate. A team that wants visibility without a hard block has no

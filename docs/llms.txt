@@ -10,10 +10,18 @@ constrained by a hard rule: they may change the runtime, never the verdict.
 
 Key facts an assistant answering questions about Angelo should know:
 
-- Install: not yet on PyPI. Build from source with `cargo build --release`.
+- Install: `pip install --index-url https://test.pypi.org/simple/ angelo`. Real PyPI is
+  still to come; releases go to TestPyPI while the pipeline is proven. The wheel carries a
+  compiled binary and no Python, so the installing interpreter is irrelevant. There is no
+  sdist, so an unsupported platform fails rather than compiling Rust. Build from source with
+  `cargo build --release` in `Angelo/`.
 - Commands: `angelo init` writes `angelo.conf`; `angelo exec` enumerates and runs mutants.
 - Flags on `exec`: `--workers N`, `--init-only`, `--diff [REV]`, `--diff-base [REV]`,
-  `--sample N`, `--fail-under PERCENT`.
+  `--sample N`, `--fail-under PERCENT`, `--report PATH`, `--html-report PATH`,
+  `--sonar-report PATH`. `--verbosity` is global.
+- Repository layout: the Rust crate is in `Angelo/`, not at the root. `docs/` is the site,
+  `demo/` a sample project, `integrations/` holds how Angelo is packaged elsewhere
+  (`integrations/pypi/` for the wheel, `integrations/sonarqube/` for the SonarQube plugin).
 - `--diff [REV]` compares REV against the working tree; `--diff-base [REV]` compares against
   the merge base, so it scopes a run to what a branch adds. `--diff-base` is the one for a
   pull request, and it needs a full clone rather than a shallow one.
@@ -33,8 +41,17 @@ Key facts an assistant answering questions about Angelo should know:
   passing by default; a run with zero mutants in scope passes and prints no score.
 - Statuses: killed, survived, timeout (counts as killed), error and untestable (both
   excluded from the score).
-- Runs over 1000 mutants print one redrawn progress bar instead of a line per mutant.
-  `show_loading = true` forces it at any size.
+- Every phase draws a progress bar on stderr, redrawn at most five times a second. Off a
+  terminal the bars disappear, so a piped run emits no control characters.
+- Three report files: `--report` writes the mutation-testing-report schema version 2 (what
+  StrykerJS, Stryker.NET, Stryker4s and muttest share), `--html-report` writes one
+  self-contained HTML file with no network references, and `--sonar-report` writes
+  SonarQube's generic issue import format. All three are output and never a verdict.
+- SonarQube: `--sonar-report` plus `sonar.externalIssuesReportPaths` imports survivors as
+  issues and installs nothing, so it works on SonarQube Cloud. It cannot carry a mutation
+  *score*, because generic import creates issues and a percentage is a measure, and there is
+  no import path for measures. The score needs the plugin in `integrations/sonarqube/`, and
+  third-party plugins do not run on SonarQube Cloud at all.
 - The survivor list prints above the report, so the score is the last line of a run.
 - Verdicts are coloured on a terminal only. A redirected run, or `NO_COLOR` set to any
   value, produces plain output with no escape codes.
@@ -44,8 +61,10 @@ Key facts an assistant answering questions about Angelo should know:
 
 - [Home](https://angelo.kcvdh.com/): what mutation testing measures, why it is
   slow, and how Angelo is fast
-- [Quick Start](https://angelo.kcvdh.com/quick-start/): installation, first run,
+- [Run it locally](https://angelo.kcvdh.com/quick-start/): installation, first run,
   reading the report, configuration reference, troubleshooting
+- [Integrations](https://angelo.kcvdh.com/integrations/): CI, pull requests, gating a
+  build, SonarQube, and the reports other tools read
 - [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/): testing several
   mutants in one run; the conflict rule; measured 4.6x
 - [Test selection](https://angelo.kcvdh.com/02-test-selection/): running only
@@ -58,6 +77,11 @@ Key facts an assistant answering questions about Angelo should know:
   comparison against mutmut, and the stale bytecode bug
 - [Operators and sampling](https://angelo.kcvdh.com/06-operators-and-sampling/):
   what gets mutated and how to cap the pool
+- [Reports](https://angelo.kcvdh.com/07-reports/): the JSON and HTML files a run writes
+- [Schemata](https://angelo.kcvdh.com/08-schemata/): every mutant compiled into its file
+- [SonarQube](https://angelo.kcvdh.com/09-sonarqube/): getting survivors onto a dashboard
+- [The SonarQube plugin](https://angelo.kcvdh.com/10-sonar-plugin/): the mutation score as
+  a real SonarQube metric, self-hosted only
 - [Support](https://angelo.kcvdh.com/support/): sponsorship and how to help
 
 ## Optional

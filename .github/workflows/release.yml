@@ -30,7 +30,7 @@ jobs:
         id: read
         shell: bash
         run: |
-          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          version=$(grep -m1 '^version' Angelo/Cargo.toml | cut -d'"' -f2)
           tag="v$version"
           echo "Cargo.toml says $version"
 
@@ -74,6 +74,9 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           command: build
+          # The recipe lives in integrations/pypi and points maturin at the
+          # crate beside it; dist is written relative to that directory.
+          working-directory: integrations/pypi
           args: --release --out dist
           # Builds inside a manylinux container, so the wheel does not demand
           # whatever glibc the runner happened to ship. Ignored elsewhere.
@@ -83,7 +86,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.os }}
-          path: dist/*.whl
+          path: integrations/pypi/dist/*.whl
 
       # maturin runs a plain `cargo build --release`, so the binary the GitHub
       # Release ships is already sitting here and is not worth building twice.
@@ -93,7 +96,7 @@ jobs:
         if: matrix.os == 'windows-latest'
         with:
           name: angelo-exe
-          path: target/release/angelo.exe
+          path: Angelo/target/release/angelo.exe
           if-no-files-found: error
 
   release:

@@ -1,6 +1,8 @@
-# Start here
+# Run it locally
 
-This page takes you from nothing to a mutation score, then explains how to read it.
+This page takes you from nothing to a mutation score on a project you have open right now,
+then explains how to read it. Putting that score into CI, onto a pull request or onto a
+SonarQube dashboard is [Integrations](integrations.md).
 
 ## Install it
 
@@ -27,7 +29,7 @@ Building from source needs a Rust toolchain and nothing else:
 ```bash
 git clone https://github.com/kvandeh/angelo.git
 cd angelo
-cargo build --release   # target/release/angelo
+cargo build --release   # Angelo/target/release/angelo
 ```
 
 !!! warning "TestPyPI is a sandbox, not a mirror"
@@ -98,6 +100,9 @@ them. Angelo marks them survived immediately rather than wasting a run.
 
 **A score of 62 percent is normal.** Real projects commonly land between 50 and 80. A
 score of 100 usually means too few mutants, not perfect tests.
+
+A score can also **fail a build** rather than just print. That is
+[Integrations](integrations.md).
 
 Verdicts are **coloured on a terminal**: detected green, survived yellow, error red,
 untestable dim. Redirect the output, or set `NO_COLOR` to anything at all, and it comes
@@ -210,9 +215,10 @@ angelo exec --html-report angelo.html   # one self-contained file, opens with no
 angelo exec --report angelo.json        # the mutation-testing-report schema, version 2
 ```
 
-The JSON is a format that already exists rather than one Angelo invented, so Stryker's
-viewers and dashboards read an Angelo run directly. Both files are covered in
-[reports](07-reports.md).
+There is a third, `--sonar-report`, for SonarQube. All three are formats that already exist
+rather than shapes Angelo invented, so other tools read an Angelo run directly: see
+[reports](07-reports.md) for what each one holds, and [Integrations](integrations.md) for
+feeding them to something.
 
 ## Make it faster or smaller
 
@@ -221,93 +227,19 @@ Large codebases produce a lot of mutants. Two options bound the work.
 ```bash
 angelo exec --diff            # only lines changed since HEAD
 angelo exec --diff main       # only lines changed since another revision
-angelo exec --diff-base main  # only the lines this branch adds on top of main
 angelo exec --sample 500      # keep 500 mutants, drop the rest at random
 ```
 
 `--diff` is the one to reach for during development, because it scopes mutation to the
-change you are actually working on. `--diff-base` is the one for a pull request, and the
-next section is about why they are not the same thing.
+change you are actually working on. There is a second one, `--diff-base`, for a pull
+request — and the difference between them is not cosmetic, so it is spelled out in
+[Integrations](integrations.md).
 
 `--sample` behaves differently from what the name might suggest, and the difference
 matters. It **deletes** the surplus mutants from the database rather than deferring them.
 What remains is a random draw from the whole codebase, so the resulting score is an
 estimate over a sample rather than a complete census. Angelo says so on every sampled
 run. See [operators and sampling](06-operators-and-sampling.md).
-
-## Run it on a pull request
-
-`--diff` compares a revision against **your working tree**. That is the right question
-while you are editing and the wrong one in CI, where a pushed branch has nothing
-uncommitted and the answer is therefore nothing at all.
-
-`--diff-base` compares against the **merge base** instead: the point where your branch left
-the base. That is what the branch adds, however many commits it took, and whether or not
-the base branch moved on since.
-
-| Flag | Question it answers | What it compares |
-| --- | --- | --- |
-| `--diff [REV]` | What is different on this machine right now? | `REV` against the working tree |
-| `--diff-base [REV]` | What does this branch add on top of `REV`? | `REV` against the branch, from where they last met |
-
-```yaml
-- uses: actions/checkout@v4
-  with:
-    fetch-depth: 0
-- run: angelo exec --diff-base $GITHUB_BASE_REF --fail-under 80
-```
-
-Given no revision, `--diff-base` works one out: the branch the pull request targets, then
-origin's own default branch, then `main` or `master`.
-
-!!! warning "`fetch-depth: 0` is not optional"
-    Checkouts fetch a single commit by default, and a shallow clone has no merge base to
-    diff from. Angelo stops and tells you rather than quietly comparing something else,
-    because the alternative is a confident score for lines you never wrote.
-
-**A branch that changes no Python enumerates zero mutants.** Angelo says so and prints no
-score, because zero mutants is zero information rather than a pass.
-
-## Fail the build on a bad score
-
-Without a threshold `angelo exec` always exits 0, so a pull request can take the score from
-80% to 30% and the workflow stays green. `--fail-under` is the gate.
-
-```bash
-angelo exec --fail-under 80    # exit 1 if the score comes in under 80%
-```
-
-It exits 1 and says which two numbers disagreed:
-
-```
-score 62.2% is below --fail-under 80.0%
-```
-
-`fail_under` in `angelo.conf` sets the same threshold for every run. The flag wins when
-both are given. **0 means no threshold**, and that is the default.
-
-A threshold has to be **earned**, so three runs fail it rather than passing by default.
-
-| Situation | Exit | Why |
-| --- | --- | --- |
-| Score below the threshold | 1 | The point of the flag. |
-| Every mutant `error`, so no score at all | 1 | A tool that could not measure must never report success, and this is what a broken test command looks like. |
-| Mutants still `pending` | 1 | A partial score is not a score. The pending ones could all survive. |
-| Zero mutants in scope | 0 | Nothing was measured, so there is nothing to judge. Angelo prints no score. |
-
-The comparison is against the **raw ratio**, not the rounded percentage, so 4 kills out of
-5 clears `--fail-under 80` rather than tripping over a rounding artefact. The report rounds
-to one decimal, so a threshold typed straight off it can still fail by a hair. Angelo widens
-both numbers when that happens rather than claiming 62.2% is below 62.2%:
-
-```
-score 62.1622% is below --fail-under 62.2000%
-```
-
-!!! note "Two ways to exit 1"
-    A red baseline also exits 1, but it reports as an error on stderr. A threshold failure
-    is a verdict rather than a crash, so its line lands on stdout with the rest of the
-    report.
 
 ## Configuration
 
@@ -384,3 +316,7 @@ failing tests *and* no way to route around them. Install `coverage`, keep the de
 
 **Scores drift between runs.** Set `warm_workers = false` and try again. If that fixes
 it, the warm process is carrying state between mutants and it is worth reporting.
+
+**"No matching distribution found for angelo."** There is no wheel for your platform, and
+there is deliberately no sdist, so pip fails immediately rather than compiling Rust for five
+minutes. Build from source, or check the wheel table above.

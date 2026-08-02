@@ -121,6 +121,7 @@ html_report = "angelo.html"   # empty means off, which is the default
 - **No source view in the HTML.** Survivors are listed, not shown in context. The JSON carries
   every file's source, so Stryker's viewer already does this properly for anyone who wants it.
 - **The JSON grows with the repository**, because the schema requires inlined sources.
-- **No mutation score reaches SonarQube.** `--sonar-report` puts survivors on a Sonar
-  dashboard — see [SonarQube](09-sonarqube.md) — but generic import creates issues, not
-  measures, and a percentage needs a Java plugin that cannot run on SonarQube Cloud.
+- **No mutation score reaches SonarQube Cloud.** `--sonar-report` puts survivors on any
+  Sonar dashboard — see [SonarQube](09-sonarqube.md) — but generic import creates issues,
+  not measures. The percentage needs [the plugin](10-sonar-plugin.md), and third-party
+  plugins run only on a self-hosted server.
