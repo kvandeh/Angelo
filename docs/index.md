@@ -9,10 +9,19 @@ binary that drives your ordinary pytest suite.
 On a project with 200 planted faults and a two second suite, Angelo takes **4.5 seconds**
 where the standard approach takes **48 seconds**. The score is identical.
 
-[Run your first mutation test](quick-start.md){ .md-button .md-button--primary }
-[See the evidence](05-benchmarks.md){ .md-button }
+[Run it on your machine](quick-start.md){ .md-button .md-button--primary }
+[Wire it into something else](integrations.md){ .md-button }
 
-Two commands and an existing pytest suite. Nothing to configure to get started.
+Two commands and an existing pytest suite. Nothing to configure to get started, and
+[every number on this site is measured](05-benchmarks.md).
+
+| You came here to | Go to |
+| --- | --- |
+| Run Angelo on a project you have open | [Run it locally](quick-start.md) |
+| Gate a pull request, or put a score in CI | [Integrations](integrations.md) |
+| Get survivors onto a SonarQube dashboard | [Integrations](integrations.md#sonarqube) |
+| Check whether the speed claims hold | [Benchmarks](05-benchmarks.md) |
+| Understand mutation testing first | Keep reading |
 
 ## What mutation testing measures
 
@@ -117,7 +126,10 @@ as a bug.
 
 ## Where to go next
 
-- **New here?** [Quick Start](quick-start.md) installs Angelo and reads your first report.
+- **New here?** [Run it locally](quick-start.md) installs Angelo and reads your first
+  report.
+- **Automating it?** [Integrations](integrations.md) covers CI, pull requests, SonarQube
+  and PyPI.
 - **Want the evidence?** [Benchmarks](05-benchmarks.md) has every measurement, including
   the ones that did not work out.
 - **Curious how it is built?** [Architecture](04-architecture.md).
@@ -129,4 +141,4 @@ as a bug.
 
 Point Angelo at a project you already have and see what your tests are missing.
 
-[Get started](quick-start.md){ .md-button .md-button--primary }
+[Run it on your machine](quick-start.md){ .md-button .md-button--primary }

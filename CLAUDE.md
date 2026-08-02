@@ -166,8 +166,9 @@ The last three are the exception that proves the rule, and the reasoning is wort
 a level filter, a timestamp format, a `RUST_LOG` parser, a multi-bar, a spinner, an ETA and
 a throttled redraw is not "a few lines here", and hand-rolling all seven would have been
 worse-tested than the crates that already do it. **`serde_json` stays out regardless** —
-`src/stryker.rs` writes one fixed shape, which is a `format!` and an escape function, not a
-general serialiser.
+`src/stryker.rs` and `src/sonar.rs` each write one fixed shape, which is a `format!` and an
+escape function, not a general serialiser. They share `quoted`: two writers may disagree
+about shape, but they must not disagree about escaping.
 
 Dev-only scripts under `scripts/` are exempt. They are not in the binary and not in the
 wheel.
@@ -496,6 +497,39 @@ and tests. `--html-report` writes one self-contained file per issue #1, plus a d
 panel above the score: `Diagnostics` collects every problem once, as it happens, so stderr and
 the report say the same things instead of each deciding separately.
 
+**SonarQube.** `--sonar-report` writes Sonar's generic issue import format directly, and
+`sonar.externalIssuesReportPaths` takes it from there. **Nothing is installed on the server**
+— Sonar registers `MutantSurvived` and `MutantNoCoverage` as *external* rules from the file
+alone, which is also why they never reach a quality profile. It went the long way round first, and the detour is the
+lesson. The original design reused Stryker's own jq filter, on the argument that a converter
+somebody else maintains beats a second format to keep correct — right up until it was
+measured. SonarQube 26.7 imports the filter's output and **warns while doing it**: the filter writes
+`engineId`, `type` and `severity` inline with no `rules` array, and 26.7 calls that a
+deprecated format that *will be removed*. So `sonar.rs` writes the current shape — a `rules`
+array with `cleanCodeAttribute` and `impacts`, and no pre-10.x `type`/`severity` pair. Both
+routes were run against a real 26.7 container on the demo: **28 issues each, the same 19/9
+split, byte-identical ranges, and only the direct one is warning-free.**
+
+Two things that fail *silently* and are therefore unit-tested rather than assumed: paths must
+be relative and forward-slashed, since Sonar resolves `filePath` by literal match and drops a
+miss with no error; and columns are 0-based for Sonar where the mutation-testing schema is
+1-based, so every column loses one. `Settled::raises` owns which verdicts become issues —
+survivors only, because `error` and `untestable` are Angelo reporting on itself and a broken
+splice is not a smell in somebody's file.
+
+**Read the whole scanner log, not the tail.** The deprecation warning is mid-run and the
+server-side `api/ce/task` warnings do not carry it, which is how it got missed once already
+and shipped as "no format warning" in a pull request that had to be corrected.
+
+Issues are not measures, so **no score ever reaches Sonar** — `api/custom_measures` was
+removed in 8.2 and a real metric needs the plugin path. The plugin buys history and a gate
+condition, and is deferred because it is a separate Java repository and third-party plugins do
+not run on SonarQube Cloud. Pitest `mutations.xml` is a **dead end**, not a shortcut: that
+plugin registers Java and Kotlin rules only. Docs in `docs/09-sonarqube.md`. The plugin path buys a real score metric with history and
+a gate, and is deferred because it is a separate Java repository and third-party plugins do
+not run on SonarQube Cloud. Pitest `mutations.xml` is a **dead end**, not a shortcut: that
+plugin registers Java and Kotlin rules only. Docs in `docs/09-sonarqube.md`.
+
 **Output.** The survivor list prints **above** the report, so the score is the last line
 on screen rather than five hundred survivors up. Verdicts carry colour through `Paint` in
 `report.rs`: detected green, survived yellow, error red, untestable dim, the score bold,
@@ -560,13 +594,20 @@ PyPI it is a dead 2021 turtle-graphics toy with one release. On **TestPyPI** the
 is free, so the playground publishes as `angelo` and the real PyPI suffix still gets
 settled at publish time, not before.
 
-**Packaging.** `pyproject.toml`, maturin with `bindings = "bin"`. The wheel carries
+**Packaging.** `integrations/pypi/pyproject.toml`, maturin with `bindings = "bin"` and a `manifest-path` pointing at the crate beside it. The wheel carries
 `angelo.exe` in its scripts directory and no Python whatsoever, so the tag is
 `py3-none-<platform>` and the interpreter that installed it is irrelevant. The version is
 `dynamic` and read from Cargo.toml, which stays the one place a release number lives.
 Wheels only, no sdist: an sdist would make an unsupported platform quietly compile Rust
 for five minutes instead of saying it has no wheel. PyPI metadata lives in
 `pyproject.toml`, not in Cargo.toml, so the two files do not compete.
+
+Verifying the wheel locally through the maturin container **shares `Angelo/target` with the
+host**, so a Linux `angelo` lands beside the Windows `angelo.exe` and wins the lookup in
+bash. The symptom is every configuration of `verdict-matrix.sh` returning nothing under the
+headline "an optimisation changed the verdicts", which points at the wrong thing entirely.
+Give the container its own `CARGO_TARGET_DIR`; the script now refuses to start rather than
+misdiagnose it.
 
 **Publishing.** TestPyPI, over OIDC **trusted publishing**, so no token exists in the
 repository at all. The match is on three names together — repository, workflow file name,
@@ -583,7 +624,7 @@ trigger, one version.
 exists) and whether to build wheels (yes on a manual run either way, so a broken publisher
 can be retried without a version bump). `release` and `testpypi` then run **beside** each
 other, so a sandbox being down never blocks shipping a binary that already built. The
-wheels job uploads `target/release/angelo.exe` too, because maturin ran a plain
+wheels job uploads `Angelo/target/release/angelo.exe` too, because maturin ran a plain
 `cargo build --release` and the release should not build the same binary twice. No
 `skip-existing`; a version TestPyPI already holds should fail loudly and be bumped.
 
@@ -591,28 +632,45 @@ wheels job uploads `target/release/angelo.exe` too, because maturin ran a plain
 
 ## Where the code lives
 
-Flat modules with one nested directory, the same shape as cargo-mutants.
+The crate is **not** at the repository root. It sits in `Angelo/` beside the things that are
+not it, so that a reader can tell the tool apart from the ways it is shipped.
+
+| Directory | Holds |
+| --- | --- |
+| `Angelo/` | the crate: `src/`, `tests/`, `Cargo.toml`, and `target/` when built |
+| `docs/` | the documentation site's pages |
+| `demo/` | a pytest project for manual runs |
+| `integrations/` | how Angelo is packaged and published **elsewhere**, one directory per target |
+| `scripts/` | dev-only tools, in the binary and the wheel neither |
+
+`integrations/` is the one to be careful with: it is not built artifacts and it is not a
+library. Each child is a recipe for handing Angelo to another ecosystem, and each one
+versions on **that** ecosystem's clock rather than on Angelo's.
+
+Inside the crate, flat modules with one nested directory, the same shape as cargo-mutants.
 
 | File | Holds |
 | --- | --- |
-| `src/main.rs` | clap definitions and dispatch, nothing else |
-| `src/exec.rs` | the exec workflow: enumerate, baseline, split, compose, run |
-| `src/config.rs` | angelo.conf, file discovery, `SKIP_DIRS`, `Sources` and the `exclude` globs |
-| `src/mutate.rs` | `Mutant` and `Status`, the operator table, enumeration |
-| `src/coverage.rs` | `Coverage`: coverage.py wrapping, numbits, classify/attribute/select |
-| `src/batch.rs` | `Batch` (`accepts`/`add`) and the first-fit composer |
-| `src/diff.rs` | `Scope` (which lines are in play) and `ChangedLines`: git hunk parsing and the changed-line filter |
-| `src/pytest.rs` | `SuiteResult`, `Selection`, `TestCase` node ids, the pytest process |
-| `src/runner.rs` | `TestRunner` spawns a `Worker` per thread; `WorkerCopy`, `PatchedFiles`, `WarmWorker` |
-| `src/warm.rs` + `src/runner/worker.py` | the long-lived pytest host, its fork and purge paths |
-| `src/schemata.rs` + `src/runner/angelo_rt.py` | every mutant compiled into its file, and the switch that picks one |
-| `src/db.rs` + `src/db/schema.sql` | turso, the only async file, and the schema |
-| `src/report.rs` | `Phase` and `Progress` (the bars), `Diagnostics`, and `Summary` (scoring, unit-tested) |
-| `src/logging.rs` | `Verbosity`, the level precedence rule, and the sink that writes through the bars |
-| `src/stryker.rs` | the mutation-testing-report schema, hand-rolled JSON |
-| `src/html.rs` + `src/html/template.html` | the self-contained HTML report |
-| `tests/end_to_end.rs` | the real binary against throwaway Python projects |
-| `pyproject.toml` | maturin's wheel recipe and the PyPI metadata |
+| `Angelo/src/main.rs` | clap definitions and dispatch, nothing else |
+| `Angelo/src/exec.rs` | the exec workflow: enumerate, baseline, split, compose, run |
+| `Angelo/src/config.rs` | angelo.conf, file discovery, `SKIP_DIRS`, `Sources` and the `exclude` globs |
+| `Angelo/src/mutate.rs` | `Mutant` and `Status`, the operator table, enumeration |
+| `Angelo/src/coverage.rs` | `Coverage`: coverage.py wrapping, numbits, classify/attribute/select |
+| `Angelo/src/batch.rs` | `Batch` (`accepts`/`add`) and the first-fit composer |
+| `Angelo/src/diff.rs` | `Scope` (which lines are in play) and `ChangedLines`: git hunk parsing and the changed-line filter |
+| `Angelo/src/pytest.rs` | `SuiteResult`, `Selection`, `TestCase` node ids, the pytest process |
+| `Angelo/src/runner.rs` | `TestRunner` spawns a `Worker` per thread; `WorkerCopy`, `PatchedFiles`, `WarmWorker` |
+| `Angelo/src/warm.rs` + `Angelo/src/runner/worker.py` | the long-lived pytest host, its fork and purge paths |
+| `Angelo/src/schemata.rs` + `Angelo/src/runner/angelo_rt.py` | every mutant compiled into its file, and the switch that picks one |
+| `Angelo/src/db.rs` + `Angelo/src/db/schema.sql` | turso, the only async file, and the schema |
+| `Angelo/src/report.rs` | `Phase` and `Progress` (the bars), `Diagnostics`, and `Summary` (scoring, unit-tested) |
+| `Angelo/src/logging.rs` | `Verbosity`, the level precedence rule, and the sink that writes through the bars |
+| `Angelo/src/stryker.rs` | the mutation-testing-report schema, hand-rolled JSON |
+| `Angelo/src/sonar.rs` | SonarQube's generic issue import format, hand-rolled JSON |
+| `Angelo/src/html.rs` + `Angelo/src/html/template.html` | the self-contained HTML report |
+| `Angelo/tests/end_to_end.rs` | the real binary against throwaway Python projects |
+| `integrations/pypi/` | maturin's wheel recipe, the PyPI metadata and the PyPI front page |
+| `integrations/sonarqube/` | the SonarQube plugin: Java, its own Maven build, its own release |
 | `demo/` | a pytest project for manual runs |
 
 ## Write documentation in the project's register
@@ -624,6 +682,11 @@ reads as clear.
 - `docs/` holds one note per idea, each shaped as abstract, background, method, result,
   limits. Update the relevant note in the same pull request when a feature or a number
   changes. The README stays a front page and links out.
+- **A numbered page is a note** in that shape; **an un-numbered page is a route.**
+  `quick-start.md` and `integrations.md` are the two routes, and they answer the only
+  question a stranger has: am I running this, or wiring it into something? They sit
+  adjacent and ungrouped in the nav, because hiding either behind a click defeats the
+  split.
 - Mermaid diagrams render through the `pymdownx.superfences` custom fence.
 - The docs site is **Zensical** (`zensical.toml`), the Material for MkDocs team's
   Rust-core successor; Material itself is end-of-life on 2026-11-05. Build with
@@ -632,23 +695,44 @@ reads as clear.
 - Report the disappointing measurements too. The benchmarks page records where the
   optimisations bought nothing, and that is the reason to trust the rest of it.
 
-## Three workflows, and no more
+## One workflow per thing that ships
 
 | Workflow | Runs |
 | --- | --- |
-| **lint-and-test** | lint on every push; tests and the verdict matrix on a pull request or on master/main/develop, ubuntu and windows |
+| **lint-and-test** | lint on every push; tests and the verdict matrix on a pull request or on master/main/develop, ubuntu and windows. Every cargo step carries `working-directory: Angelo` |
 | **docs** | on push to master: builds and deploys to Pages |
-| **release** | on push to master, or by hand: version from Cargo.toml, skipped if the tag exists, builds a wheel per platform, ships `angelo.exe` and `src.zip`, uploads to TestPyPI, body is the merge commit message |
+| **release** | on push to master, or by hand: version from `Angelo/Cargo.toml`, skipped if the tag exists, builds a wheel per platform, ships `angelo.exe` and `src.zip`, uploads to TestPyPI, body is the merge commit message |
+| **testpypi** | by hand only, for retrying a publish without a release |
+| **sonarqube-plugin** | on a change under `integrations/sonarqube/`: builds the jar, **starts a real SonarQube and asserts the plugin loads**, then cuts its own release tagged `sonarqube-plugin-v*` |
+
+The rule is one workflow per shippable thing, not a fixed count. What is *not* allowed is a
+second workflow for the same artifact: a GitHub Release cut with the default `GITHUB_TOKEN`
+never starts another workflow, so a publishing workflow triggered by the release it exists to
+publish would sit silent while looking wired up. That is why the wheel upload lives inside
+`release.yml`.
+
+The plugin gets its own because it versions on SonarQube's API rather than on Angelo's
+features, and because its characteristic failure — a jar that compiles and does not load — is
+invisible to `mvn package` and needs a server to catch.
 
 `scripts/bench-repo.sh` stays a local tool and has no workflow.
 
 ## Commands
+
+From `Angelo/`, since that is where the crate lives:
 
 ```bash
 cargo build
 cargo clippy --all-targets
 cargo fmt
 cargo test
+```
+
+The verdict matrix runs from the **repository root** and finds the binary under `Angelo/`:
+
+```bash
+cargo build --release --manifest-path Angelo/Cargo.toml
+bash scripts/verdict-matrix.sh
 ```
 
 Manual run, from `demo/`:

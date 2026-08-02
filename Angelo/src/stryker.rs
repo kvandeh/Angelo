@@ -166,7 +166,10 @@ fn strings(values: &[String]) -> String {
 /// Mutants carry raw Python, so every one of these cases turns up in a real
 /// run: a replacement holding a quote, a source file holding a backslash, and a
 /// `source` field holding the whole file's newlines.
-fn quoted(text: &str) -> String {
+///
+/// Shared with `sonar.rs`. Two hand-rolled writers may disagree about shape;
+/// they must not disagree about escaping.
+pub fn quoted(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
     for character in text.chars() {

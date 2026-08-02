@@ -17,7 +17,8 @@
 </p>
 
 <p align="center">
-  <b><a href="https://angelo.kcvdh.com/quick-start/">Quick Start</a></b> ·
+  <b><a href="https://angelo.kcvdh.com/quick-start/">Run it locally</a></b> ·
+  <a href="https://angelo.kcvdh.com/integrations/">Integrations</a> ·
   <a href="https://angelo.kcvdh.com/">Documentation</a> ·
   <a href="https://angelo.kcvdh.com/05-benchmarks/">Benchmarks</a>
 </p>
@@ -104,6 +105,22 @@ version 2, the format StrykerJS, Stryker.NET, Stryker4s and muttest all write, s
 existing viewers and dashboards read an Angelo run without a converter. See
 [reports](https://angelo.kcvdh.com/07-reports/).
 
+Survivors also go straight to **SonarQube**, so they land on the dashboard your team already
+reads:
+
+```bash
+angelo exec --sonar-report angelo-sonar.json   # sonar.externalIssuesReportPaths
+```
+
+No plugin, no Java, nothing installed on the server, and it works on SonarQube Cloud. See
+[SonarQube](https://angelo.kcvdh.com/09-sonarqube/).
+
+A self-hosted SonarQube can go further. The
+[plugin](https://angelo.kcvdh.com/10-sonar-plugin/) in `integrations/sonarqube/` publishes the
+mutation score as a **real SonarQube metric**, with history and a quality-gate condition on
+the number. Third-party plugins do not run on SonarQube Cloud, so that half is Server and
+Community Build only.
+
 ## What mutation testing is
 
 Most of a mutation run is not testing. On one selected test, roughly 95% of the 327 ms
@@ -162,8 +179,8 @@ Apple Silicon; anything else builds from source:
 
 ```bash
 git clone https://github.com/kvandeh/angelo.git
-cd angelo
-cargo build --release   # target/release/angelo
+cd angelo/Angelo
+cargo build --release   # Angelo/target/release/angelo
 ```
 
 ## Documentation
@@ -173,7 +190,8 @@ Each page is written as a short paper: abstract, background, method, result, lim
 
 | Page | Covers |
 | --- | --- |
-| [Quick Start](https://angelo.kcvdh.com/quick-start/) | First run, reading the report, configuration, troubleshooting |
+| [Run it locally](https://angelo.kcvdh.com/quick-start/) | First run, reading the report, configuration, troubleshooting |
+| [Integrations](https://angelo.kcvdh.com/integrations/) | CI, pull requests, SonarQube, PyPI |
 | [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | The conflict rule and why it is sound |
 | [Test selection](https://angelo.kcvdh.com/02-test-selection/) | Coverage into pytest node ids |
 | [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | The `fork()` substitute, and why subinterpreters are not one |

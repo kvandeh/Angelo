@@ -1,0 +1,167 @@
+name: SonarQube plugin
+
+# The plugin is the only way a mutation *score* reaches SonarQube: generic issue
+# import creates issues, a percentage is a measure, and there is no import path
+# for measures.
+#
+# There is exactly one distribution channel, and it is worth being blunt about
+# why. **SonarQube Cloud does not run third-party plugins at all**, so there is
+# nothing to publish to and no Cloud story to build. The jar is for a SonarQube
+# Server or Community Build that somebody administers, which means a file they
+# download and drop in. So: build it, prove it loads, attach it to a release.
+#
+# Cloud users are not stranded — `angelo exec --sonar-report` installs nothing
+# and works on both. They simply get issues without the score.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "integrations/sonarqube/**"
+      - ".github/workflows/sonarqube-plugin.yml"
+  pull_request:
+    paths:
+      - "integrations/sonarqube/**"
+      - ".github/workflows/sonarqube-plugin.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: integrations/sonarqube
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+      release: ${{ steps.read.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+
+      # Java 17 rather than the newest: sonar-plugin-api targets it, and a
+      # plugin compiled for a newer bytecode level fails at load with a
+      # ClassVersionError rather than anything that names the real cause.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+
+      - run: mvn -B package
+
+      # Same rule as release.yml: the version in the manifest decides whether
+      # there is anything to release, so bumping it is what cuts one.
+      - name: Read the version from pom.xml
+        id: read
+        run: |
+          version=$(mvn -q -DforceStdout help:evaluate -Dexpression=project.version)
+          tag="sonarqube-plugin-v$version"
+          echo "pom.xml says $version"
+          if git ls-remote --tags origin | grep -q "refs/tags/$tag$"; then
+            release=false
+            echo "$tag already exists, so no release"
+          else
+            release=true
+          fi
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "release=$release"
+          } >> "$GITHUB_OUTPUT"
+
+      # Uploaded on every run, pull requests included, so the jar can be pulled
+      # down and tried against a real server before anything is tagged.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sonar-angelo-plugin
+          path: integrations/sonarqube/target/sonar-angelo-plugin-*.jar
+          if-no-files-found: error
+
+  # A plugin that compiles and does not load is the characteristic failure here,
+  # and it is invisible to `mvn package`: the plugin API version, the manifest
+  # entries and the bytecode level are all checked by the server at startup and
+  # by nothing before it. So start a real SonarQube and ask it.
+  loads:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: sonar-angelo-plugin
+          path: plugin
+
+      - name: Start SonarQube with the plugin installed
+        working-directory: .
+        run: |
+          docker run -d --name sonarqube -p 9000:9000 \
+            -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true \
+            -v "$PWD/plugin:/opt/sonarqube/extensions/plugins" \
+            sonarqube:community
+
+      - name: Wait for it to come up
+        working-directory: .
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://localhost:9000/api/system/status | grep -q '"status":"UP"'; then
+              echo "up"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "SonarQube never came up. Its own log follows:"
+          docker logs sonarqube | tail -60
+          exit 1
+
+      # A rejected plugin does not stop the server, it is simply absent, so the
+      # check has to be for presence rather than for the absence of an error.
+      - name: Assert the plugin loaded
+        working-directory: .
+        run: |
+          installed=$(curl -s -u admin:admin http://localhost:9000/api/plugins/installed)
+          echo "$installed"
+          if ! echo "$installed" | grep -q '"key":"angelo"'; then
+            echo "::error::The plugin did not load. SonarQube's log follows:"
+            docker logs sonarqube | grep -iE "plugin|angelo" | tail -40
+            exit 1
+          fi
+
+  release:
+    needs: [build, loads]
+    if: github.ref == 'refs/heads/main' && needs.build.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: sonar-angelo-plugin
+
+      # A release of its own, tagged apart from the binary's, because the plugin
+      # versions on SonarQube's API rather than on Angelo's features and the two
+      # will not move together.
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.build.outputs.tag }}
+          name: SonarQube plugin ${{ needs.build.outputs.version }}
+          files: sonar-angelo-plugin-*.jar
+          body: |
+            The Angelo plugin for **SonarQube Server** and **Community Build**.
+            It publishes the mutation score as a real metric, with history and a
+            quality-gate condition on the number.
+
+            Download the jar, drop it in `extensions/plugins/`, and restart:
+
+            ```bash
+            docker cp sonar-angelo-plugin-${{ needs.build.outputs.version }}.jar \
+              sonarqube:/opt/sonarqube/extensions/plugins/
+            docker restart sonarqube
+            ```
+
+            **This does not work on SonarQube Cloud**, which runs no third-party
+            plugins. On Cloud, use `angelo exec --sonar-report` — it installs
+            nothing and imports survivors as issues, without the score metric.
+
+            Full instructions: https://angelo.kcvdh.com/10-sonar-plugin/

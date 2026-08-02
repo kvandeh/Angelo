@@ -28,6 +28,9 @@ jobs:
       - uses: PyO3/maturin-action@v1
         with:
           command: build
+          # The recipe lives in integrations/pypi and points maturin at the
+          # crate beside it; dist is written relative to that directory.
+          working-directory: integrations/pypi
           args: --release --out dist
           # Builds inside a manylinux container, so the wheel does not demand
           # whatever glibc the runner happened to ship. Ignored elsewhere.
@@ -37,7 +40,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: wheel-${{ matrix.os }}
-          path: dist/*.whl
+          path: integrations/pypi/dist/*.whl
 
   publish:
     needs: wheels

@@ -11,6 +11,7 @@ mod pytest;
 mod report;
 mod runner;
 mod schemata;
+mod sonar;
 mod stryker;
 mod warm;
 
@@ -67,6 +68,10 @@ enum Command {
         /// Write one self-contained HTML file here
         #[arg(long, value_name = "PATH")]
         html_report: Option<PathBuf>,
+        /// Write the survivors here in SonarQube's generic issue import
+        /// format, ready for sonar.externalIssuesReportPaths
+        #[arg(long, value_name = "PATH")]
+        sonar_report: Option<PathBuf>,
     },
 }
 
@@ -90,6 +95,7 @@ fn main() -> Result<ExitCode> {
             fail_under,
             report,
             html_report,
+            sonar_report,
         } => exec::run(
             exec::Options {
                 workers,
@@ -99,6 +105,7 @@ fn main() -> Result<ExitCode> {
                 fail_under,
                 report,
                 html_report,
+                sonar_report,
             },
             &bars,
         ),

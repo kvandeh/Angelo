@@ -6,7 +6,7 @@ set -uo pipefail
 REPO=${1:?usage: bench-repo.sh <repo-dir> [sources] [tests]}
 SOURCES=${2:-}
 TESTS=${3:-tests}
-ANGELO=$(cd "$(dirname "$0")/.." && pwd)/target/release/angelo
+ANGELO=$(cd "$(dirname "$0")/.." && pwd)/Angelo/target/release/angelo
 PYTHON=$(cd "$REPO" && pwd)/.venv/bin/python
 OUT=bench-results.md
 

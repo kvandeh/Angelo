@@ -9,7 +9,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The repository root, which is the crate's *parent*: the crate lives in
+/// `Angelo/`, while `README.md`, `docs/` and `zensical.toml` sit beside it.
 fn repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate directory has a parent")
+        .to_path_buf()
+}
+
+/// The crate directory, for the sources this test reads directly.
+fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
@@ -66,7 +76,7 @@ fn documented_flags(text: &str) -> BTreeSet<String> {
 /// Config keys are the `pub` fields of Config, read straight from the source
 /// so the list cannot drift from the struct.
 fn config_keys() -> BTreeSet<String> {
-    let source = fs::read_to_string(repo_root().join("src/config.rs")).expect("src/config.rs");
+    let source = fs::read_to_string(crate_root().join("src/config.rs")).expect("src/config.rs");
     let body = source
         .split("pub struct Config {")
         .nth(1)
@@ -94,6 +104,10 @@ const OTHER_TOOLS: &[&str] = &[
     "bash",
     "uses:",
     "benchmark.py",
+    "docker",
+    "mvn",
+    "npx",
+    "sonar-scanner",
 ];
 
 #[test]

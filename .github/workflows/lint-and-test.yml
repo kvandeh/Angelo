@@ -17,8 +17,12 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: Angelo
       - run: cargo fmt --check
+        working-directory: Angelo
       - run: cargo clippy --all-targets -- -D warnings
+        working-directory: Angelo
 
   # Expensive: needs python, pytest and coverage. Only where it pays.
   test:
@@ -35,6 +39,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: Angelo
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
@@ -42,6 +48,7 @@ jobs:
       # test selection, so without it those paths would silently go untested.
       - run: python -m pip install --upgrade pip pytest coverage
       - run: cargo test --all-targets
+        working-directory: Angelo
 
   # Batching, test selection and warm workers are pure speed features. If any
   # of them changes a score, that is a correctness bug, not a tuning question.
@@ -55,10 +62,14 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          workspaces: Angelo
       - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip pytest coverage
       - run: cargo build --release
+        working-directory: Angelo
       # bash, not ./, because the exec bit does not survive a Windows commit.
+      # Run from the repository root: the script finds the binary under Angelo/.
       - run: bash scripts/verdict-matrix.sh
