@@ -121,5 +121,6 @@ html_report = "angelo.html"   # empty means off, which is the default
 - **No source view in the HTML.** Survivors are listed, not shown in context. The JSON carries
   every file's source, so Stryker's viewer already does this properly for anyone who wants it.
 - **The JSON grows with the repository**, because the schema requires inlined sources.
-- **No SonarQube integration yet.** The JSON is the documented route to it, and that is
-  [issue #42](https://github.com/kvandeh/angelo/issues/42).
+- **No mutation score reaches SonarQube.** The JSON gets survivors onto a Sonar dashboard in
+  one documented step — see [SonarQube](09-sonarqube.md) — but a percentage needs a Java
+  plugin that cannot run on SonarQube Cloud.

@@ -20,6 +20,7 @@ nav = [
   { "Benchmarks" = "05-benchmarks.md" },
   { "Operators and sampling" = "06-operators-and-sampling.md" },
   { "Reports" = "07-reports.md" },
+  { "SonarQube" = "09-sonarqube.md" },
   { "Support" = "support.md" },
 ]
 

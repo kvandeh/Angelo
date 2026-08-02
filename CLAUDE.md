@@ -496,6 +496,22 @@ and tests. `--html-report` writes one self-contained file per issue #1, plus a d
 panel above the score: `Diagnostics` collects every problem once, as it happens, so stderr and
 the report say the same things instead of each deciding separately.
 
+**SonarQube.** Reached through the report and **no Angelo code at all**: Stryker's own jq
+filter converts the schema into Sonar's generic issue import format, and
+`sonar.externalIssuesReportPaths` takes it from there. That is why the emitter's four
+conformance rules — relative forward-slashed keys, no `projectRoot`, 1-based end-exclusive
+locations, `NoCoverage` split out of `Survived` — are unit-tested rather than assumed: each
+one fails *silently*, dropping issues with no error. Verified against SonarQube 26.7 Community
+Build, where the demo's 28 survivors arrived as 28 issues on the right files at the right
+columns, **and the scanner raised no format warning**. That last part was the open question:
+the filter writes `engineId`, `type` and `severity` inline with no `rules` array, which is the
+older shape. Writing Sonar's JSON directly is about forty more lines and stays the fallback
+**if a server ever warns**, not before — one filter maintained upstream beats a second format
+this repository has to keep correct. The plugin path buys a real score metric with history and
+a gate, and is deferred because it is a separate Java repository and third-party plugins do
+not run on SonarQube Cloud. Pitest `mutations.xml` is a **dead end**, not a shortcut: that
+plugin registers Java and Kotlin rules only. Docs in `docs/09-sonarqube.md`.
+
 **Output.** The survivor list prints **above** the report, so the score is the last line
 on screen rather than five hundred survivors up. Verdicts carry colour through `Paint` in
 `report.rs`: detected green, survived yellow, error red, untestable dim, the score bold,
