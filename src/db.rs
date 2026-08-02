@@ -301,6 +301,14 @@ pub struct Settled {
     pub failed_tests: Vec<String>,
 }
 
+impl Settled {
+    /// The SonarQube rule this mutant raises, if it raises one. A pending
+    /// mutant has no verdict yet and so cannot raise anything.
+    pub fn raises(&self) -> Option<&'static str> {
+        self.status?.sonar_rule(self.executed)
+    }
+}
+
 pub struct CoverageRow {
     pub file: String,
     pub context_id: i64,

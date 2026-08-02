@@ -104,9 +104,14 @@ version 2, the format StrykerJS, Stryker.NET, Stryker4s and muttest all write, s
 existing viewers and dashboards read an Angelo run without a converter. See
 [reports](https://angelo.kcvdh.com/07-reports/).
 
-It is also one documented step from **SonarQube**: an upstream jq filter turns that same file
-into Sonar's generic issue import format, so survivors land on the dashboard your team
-already reads. No plugin and no Java, and it works on SonarQube Cloud. See
+Survivors also go straight to **SonarQube**, so they land on the dashboard your team already
+reads:
+
+```bash
+angelo exec --sonar-report angelo-sonar.json   # sonar.externalIssuesReportPaths
+```
+
+No plugin, no Java, nothing installed on the server, and it works on SonarQube Cloud. See
 [SonarQube](https://angelo.kcvdh.com/09-sonarqube/).
 
 ## What mutation testing is

@@ -15,6 +15,7 @@ use crate::pytest::Budget;
 use crate::report::{self, Diagnostics, Phase, Progress};
 use crate::runner::TestRunner;
 use crate::schemata::Schemata;
+use crate::sonar;
 use crate::stryker;
 use crate::warm;
 
@@ -33,6 +34,8 @@ pub struct Options {
     pub report: Option<PathBuf>,
     /// Write the self-contained HTML report here.
     pub html_report: Option<PathBuf>,
+    /// Write SonarQube's generic issue import format here.
+    pub sonar_report: Option<PathBuf>,
 }
 
 pub fn run(options: Options, bars: &MultiProgress) -> Result<ExitCode> {
@@ -210,6 +213,7 @@ fn on_or_off(enabled: bool) -> &'static str {
 struct Reports {
     json: Option<PathBuf>,
     html: Option<PathBuf>,
+    sonar: Option<PathBuf>,
 }
 
 impl Reports {
@@ -227,6 +231,10 @@ impl Reports {
                 .html_report
                 .clone()
                 .or_else(|| configured(&config.html_report)),
+            sonar: options
+                .sonar_report
+                .clone()
+                .or_else(|| configured(&config.sonar_report)),
         }
     }
 
@@ -237,7 +245,7 @@ impl Reports {
     /// the run decided, which is what keeps `verdict-matrix.sh` agreeing with
     /// itself with the flags on.
     fn write(&self, database: &Database, diagnostics: &Diagnostics, fail_under: f64) -> Result<()> {
-        if self.json.is_none() && self.html.is_none() {
+        if self.json.is_none() && self.html.is_none() && self.sonar.is_none() {
             return Ok(());
         }
         let settled = database.all_mutants()?;
@@ -251,6 +259,13 @@ impl Reports {
         if let Some(path) = &self.html {
             html::write(path, &settled, &database.status_counts()?, diagnostics)?;
             log::info!("wrote {}", path.display());
+        }
+        if let Some(path) = &self.sonar {
+            sonar::write(path, &settled)?;
+            log::info!(
+                "wrote {} in SonarQube's generic issue import format",
+                path.display()
+            );
         }
         Ok(())
     }

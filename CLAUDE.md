@@ -166,8 +166,9 @@ The last three are the exception that proves the rule, and the reasoning is wort
 a level filter, a timestamp format, a `RUST_LOG` parser, a multi-bar, a spinner, an ETA and
 a throttled redraw is not "a few lines here", and hand-rolling all seven would have been
 worse-tested than the crates that already do it. **`serde_json` stays out regardless** —
-`src/stryker.rs` writes one fixed shape, which is a `format!` and an escape function, not a
-general serialiser.
+`src/stryker.rs` and `src/sonar.rs` each write one fixed shape, which is a `format!` and an
+escape function, not a general serialiser. They share `quoted`: two writers may disagree
+about shape, but they must not disagree about escaping.
 
 Dev-only scripts under `scripts/` are exempt. They are not in the binary and not in the
 wheel.
@@ -496,18 +497,35 @@ and tests. `--html-report` writes one self-contained file per issue #1, plus a d
 panel above the score: `Diagnostics` collects every problem once, as it happens, so stderr and
 the report say the same things instead of each deciding separately.
 
-**SonarQube.** Reached through the report and **no Angelo code at all**: Stryker's own jq
-filter converts the schema into Sonar's generic issue import format, and
-`sonar.externalIssuesReportPaths` takes it from there. That is why the emitter's four
-conformance rules — relative forward-slashed keys, no `projectRoot`, 1-based end-exclusive
-locations, `NoCoverage` split out of `Survived` — are unit-tested rather than assumed: each
-one fails *silently*, dropping issues with no error. Verified against SonarQube 26.7 Community
-Build, where the demo's 28 survivors arrived as 28 issues on the right files at the right
-columns, **and the scanner raised no format warning**. That last part was the open question:
-the filter writes `engineId`, `type` and `severity` inline with no `rules` array, which is the
-older shape. Writing Sonar's JSON directly is about forty more lines and stays the fallback
-**if a server ever warns**, not before — one filter maintained upstream beats a second format
-this repository has to keep correct. The plugin path buys a real score metric with history and
+**SonarQube.** `--sonar-report` writes Sonar's generic issue import format directly, and
+`sonar.externalIssuesReportPaths` takes it from there. **Nothing is installed on the server**
+— Sonar registers `MutantSurvived` and `MutantNoCoverage` as *external* rules from the file
+alone, which is also why they never reach a quality profile. It went the long way round first, and the detour is the
+lesson. The original design reused Stryker's own jq filter, on the argument that a converter
+somebody else maintains beats a second format to keep correct — right up until it was
+measured. SonarQube 26.7 imports the filter's output and **warns while doing it**: the filter writes
+`engineId`, `type` and `severity` inline with no `rules` array, and 26.7 calls that a
+deprecated format that *will be removed*. So `sonar.rs` writes the current shape — a `rules`
+array with `cleanCodeAttribute` and `impacts`, and no pre-10.x `type`/`severity` pair. Both
+routes were run against a real 26.7 container on the demo: **28 issues each, the same 19/9
+split, byte-identical ranges, and only the direct one is warning-free.**
+
+Two things that fail *silently* and are therefore unit-tested rather than assumed: paths must
+be relative and forward-slashed, since Sonar resolves `filePath` by literal match and drops a
+miss with no error; and columns are 0-based for Sonar where the mutation-testing schema is
+1-based, so every column loses one. `Settled::raises` owns which verdicts become issues —
+survivors only, because `error` and `untestable` are Angelo reporting on itself and a broken
+splice is not a smell in somebody's file.
+
+**Read the whole scanner log, not the tail.** The deprecation warning is mid-run and the
+server-side `api/ce/task` warnings do not carry it, which is how it got missed once already
+and shipped as "no format warning" in a pull request that had to be corrected.
+
+Issues are not measures, so **no score ever reaches Sonar** — `api/custom_measures` was
+removed in 8.2 and a real metric needs the plugin path. The plugin buys history and a gate
+condition, and is deferred because it is a separate Java repository and third-party plugins do
+not run on SonarQube Cloud. Pitest `mutations.xml` is a **dead end**, not a shortcut: that
+plugin registers Java and Kotlin rules only. Docs in `docs/09-sonarqube.md`. The plugin path buys a real score metric with history and
 a gate, and is deferred because it is a separate Java repository and third-party plugins do
 not run on SonarQube Cloud. Pitest `mutations.xml` is a **dead end**, not a shortcut: that
 plugin registers Java and Kotlin rules only. Docs in `docs/09-sonarqube.md`.
@@ -626,6 +644,7 @@ Flat modules with one nested directory, the same shape as cargo-mutants.
 | `src/report.rs` | `Phase` and `Progress` (the bars), `Diagnostics`, and `Summary` (scoring, unit-tested) |
 | `src/logging.rs` | `Verbosity`, the level precedence rule, and the sink that writes through the bars |
 | `src/stryker.rs` | the mutation-testing-report schema, hand-rolled JSON |
+| `src/sonar.rs` | SonarQube's generic issue import format, hand-rolled JSON |
 | `src/html.rs` + `src/html/template.html` | the self-contained HTML report |
 | `tests/end_to_end.rs` | the real binary against throwaway Python projects |
 | `pyproject.toml` | maturin's wheel recipe and the PyPI metadata |

@@ -1,12 +1,11 @@
 # SonarQube
 
 **Abstract.** SonarQube is where most teams already read their code quality, and no Python
-mutation testing tool puts survivors there. Angelo does, and it needed no new code to do it:
-the JSON report is already the format one documented conversion away from Sonar's generic
-issue import. A jq filter maintained by the Stryker project does the conversion, the scanner
-does the rest. **No plugin, no Java, and it works on SonarQube Cloud.** Measured against
-SonarQube 26.7 Community Build: the demo project's 28 survivors arrived as 28 issues, on the
-right files, at the right columns.
+mutation testing tool puts survivors there. Angelo does. `--sonar-report` writes SonarQube's
+generic issue import format directly, and `sonar.externalIssuesReportPaths` takes it from
+there. **No plugin, no Java, nothing installed on the server, and it works on SonarQube
+Cloud.** Measured against SonarQube 26.7 Community Build: the demo project's 28 survivors
+arrived as 28 issues, on the right files, at the right columns, with no warning.
 
 ## Background
 
@@ -30,68 +29,91 @@ extension point. The plugin path is still open. It is just expensive.
 
 ## Method
 
-Three steps, and Angelo is only the first of them.
+Two steps. Angelo writes the file Sonar reads.
 
 ```mermaid
 flowchart LR
-    A[angelo exec<br>--report] --> B[angelo.json<br>mutation-testing-report]
-    B --> C[jq filter<br>maintained upstream]
-    C --> D[angelo-sonar.json<br>generic issue import]
-    D --> E[sonar-scanner]
-    E --> F[SonarQube]
+    A[angelo exec<br>--sonar-report] --> B[angelo-sonar.json<br>generic issue import]
+    B --> C[sonar-scanner]
+    C --> D[SonarQube]
 ```
 
 ```bash
-angelo exec --report angelo.json --fail-under 60
-
-curl -sSLO https://raw.githubusercontent.com/stryker-mutator/mutation-testing-elements/master/integrations/mutation-report-to-sonar.jq
-jq -f mutation-report-to-sonar.jq angelo.json > angelo-sonar.json
+angelo exec --sonar-report angelo-sonar.json --fail-under 60
 
 sonar-scanner -Dsonar.externalIssuesReportPaths=angelo-sonar.json
 ```
 
-The filter belongs to
-[mutation-testing-elements](https://github.com/stryker-mutator/mutation-testing-elements/blob/master/integrations/mutation-report-to-sonar.jq)
-and is maintained there. Angelo emits the schema; the conversion is somebody else's
-problem on purpose.
+**Nothing is installed on the SonarQube server.** Sonar registers Angelo's two rules as
+*external* rules from that file alone. That is also why they never appear on the Rules page
+or in a quality profile — see [limits](#limits).
+
+### The route this replaces
+
+The original design went through Stryker's own jq filter, which converts the
+`--report` schema into this same format:
+
+```bash
+angelo exec --report angelo.json
+curl -sSLO https://raw.githubusercontent.com/stryker-mutator/mutation-testing-elements/master/integrations/mutation-report-to-sonar.jq
+jq -f mutation-report-to-sonar.jq angelo.json > angelo-sonar.json
+```
+
+It works, and reusing a converter somebody else maintains was the better trade right up until
+it was measured. **SonarQube 26.7 imports the filter's output and warns while doing it:**
+
+```
+WARN External issues were imported with a deprecated format which will be
+removed in a later version of SonarQube. The "rules" field is missing.
+```
+
+The filter writes `engineId`, `type` and `severity` inline on each issue and emits no `rules`
+array. That is the pre-10.x shape, and Sonar has announced its removal. `--sonar-report`
+writes the current one — a `rules` array declaring `cleanCodeAttribute` and `impacts` — which
+drops the deprecation and the jq dependency together.
+
+The jq route stays documented because it still works today and because it is what a project
+already emitting `--report` for Stryker's viewer will reach for. Prefer `--sonar-report`.
 
 ### Two rules, not one
 
-The filter imports **only `Survived` and `NoCoverage`**, and gives them different rule ids
-and different messages.
+Only survivors become issues, and the two kinds are **not** the same finding.
 
 | Rule id in Sonar | Angelo status | What the developer should do |
 | --- | --- | --- |
 | `external_Angelo:MutantSurvived` | `survived`, a test ran it | Add an assertion — a test executes this line and checks nothing about it |
 | `external_Angelo:MutantNoCoverage` | `survived`, nothing ran it | Write a test — no test executes this line at all |
 
-`framework.name` in the report becomes Sonar's `engineId`, which is why the rules are named
-after Angelo.
+Both are declared with the clean-code attribute **`TESTED`**, which is Sonar's own vocabulary
+for exactly this, and a `MAINTAINABILITY` impact — `MEDIUM` for a survivor, `HIGH` for an
+uncovered one. `engineId` is `Angelo`, which is where the `external_Angelo:` prefix comes
+from.
+
+Everything else stays out. `killed` is the suite working; `error` and `untestable` are Angelo
+reporting on itself, and a splice that broke the syntax is not a smell in somebody's file.
+**That is precisely why a build is gated on `--fail-under` and never on this** — see
+[the caveat](#the-caveat-that-matters).
 
 ### Four things that fail silently if they are wrong
 
-The filter reads seven fields and four of them are easy to get subtly wrong. Each one is a
-silent failure rather than an error, so each one is a unit test in
-[`src/stryker.rs`](https://github.com/kvandeh/angelo/blob/main/src/stryker.rs).
+Four fields are easy to get subtly wrong, and each one fails *silently* rather than erroring.
+Each is therefore a unit test in
+[`src/sonar.rs`](https://github.com/kvandeh/angelo/blob/main/src/sonar.rs), and the same four
+in [`src/stryker.rs`](https://github.com/kvandeh/angelo/blob/main/src/stryker.rs) for the jq
+route.
 
 | Requirement | Why | Failure mode |
 | --- | --- | --- |
-| File keys **relative and forward-slashed**, and **no `projectRoot` key at all** | The filter strips the root with a literal `sub("^" + $projectRoot + "/"; "")`. A Windows root against forward-slashed keys strips nothing | Sonar receives a path matching no file and **drops the issues with no error** |
-| Locations **1-based**, `end` **exclusive**, columns in **characters** | The schema sets `minimum: 1`; the filter subtracts 1 to reach Sonar's 0-based columns | A 0-based column becomes `-1` |
-| `NoCoverage` emitted separately from `Survived` | See above — different rule, different action | Two different jobs collapse into one finding |
-| `error` mapped to `RuntimeError` rather than dropped | See [the caveat](#the-caveat-that-matters) | A broken test command exports as a clean bill of health |
+| Paths **relative and forward-slashed** | Sonar resolves `filePath` against the scanner's base directory by literal match | A Windows separator matches no file and Sonar **drops the issue with no error** |
+| Columns **0-based** for Sonar, 1-based in the schema | The two formats disagree, so every column loses one on the way out | The squiggle lands on the wrong token |
+| `NoCoverage` separated from `Survived` | Different rule, different action | "write a test" and "add an assertion" collapse into one finding |
+| A `rules` array with `cleanCodeAttribute` and `impacts` | The pre-10.x inline `type`/`severity` pair is deprecated | The import warns, and a later SonarQube will reject it |
 
 ## In CI
 
 ```yaml
 - name: Mutation testing
-  run: angelo exec --diff-base --report angelo.json --fail-under 60
-
-- name: Convert for SonarQube
-  if: always()
-  run: |
-    curl -sSLO https://raw.githubusercontent.com/stryker-mutator/mutation-testing-elements/master/integrations/mutation-report-to-sonar.jq
-    jq -f mutation-report-to-sonar.jq angelo.json > angelo-sonar.json
+  run: angelo exec --diff-base --sonar-report angelo-sonar.json --fail-under 60
 
 - name: SonarQube scan
   if: always()
@@ -108,54 +130,72 @@ issues are most worth uploading exactly then.
 **`--diff-base` pairs naturally with this.** It scopes the run to what the branch adds, which
 is the same set of lines Sonar's new code period cares about.
 
+## Configuration
+
+The flag can live in `angelo.conf` instead, and the flag wins.
+
+```toml
+sonar_report = "angelo-sonar.json"   # empty means off, which is the default
+```
+
 ## Result
 
 Verified end to end against **SonarQube 26.7.0 Community Build** on the `demo/` project, a
-run of 74 mutants scoring 62.2%.
+run of 74 mutants scoring 62.2%, scanned from a Windows host.
 
-| Check | Result |
+| Check | jq route | `--sonar-report` |
+| --- | --- | --- |
+| Issues imported | 28, matching the run's 28 survivors | **28** |
+| Split by rule | 19 `MutantSurvived`, 9 `MutantNoCoverage` | **Same** |
+| Files resolved | All three, by relative path | **All three** |
+| Column accuracy | `calculator.py:51` cols 13–15 is `>=`, cols 16–19 is `100` | **Identical** |
+| Scanner format warning | **Deprecated format, `rules` field missing** | **None** |
+
+The two routes agree issue for issue, which is the point: `--sonar-report` is the same
+findings in the shape Sonar is not planning to remove.
+
+One measurement worth recording next to it. The same scan imported a coverage report:
+
+| Metric | Value |
 | --- | --- |
-| Issues imported | **28**, matching the run's 28 survivors exactly |
-| Split by rule | 19 `MutantSurvived`, 9 `MutantNoCoverage` |
-| Files resolved | All three, by relative path, on Windows |
-| Column accuracy | `calculator.py:51` cols 13–15 is `>=`, cols 16–19 is `100` — exact |
-| Format warnings from the scanner | **None** |
+| Line coverage | 89.6% |
+| Mutation score | 62.2% |
 
-That last row settles an open question. The filter writes `engineId`, `type` and `severity`
-inline on each issue and emits no `rules` array, whereas the current Sonar documentation
-describes a `rules` array carrying `cleanCodeAttribute` and `impacts`. **26.7 accepts the
-older shape without a deprecation warning.** Should that change, writing Sonar's JSON
-directly is about forty more lines in `stryker.rs` and drops the jq step entirely — but
-until it warns, one maintained-upstream filter beats a second format Angelo has to keep
-correct.
+**That gap is the entire argument for the tool.** Coverage says the line ran. The mutation
+score says its behaviour was actually asserted on.
 
 ## The caveat that matters
 
 **An all-`error` run exports an empty issue list, and Sonar renders that as "no problems
 found."**
 
-The filter imports survivors. A broken test command produces all `error`, which is zero
+Only survivors become issues. A broken test command produces all `error`, which is zero
 survivors, which is a green dashboard. That is this tool's characteristic failure —
 inventing a test gap that does not exist — running in reverse, and it is worse, because the
 warning Angelo prints about error counts never reaches Sonar.
 
 Two things guard it, and both are needed:
 
-1. `error` maps to `RuntimeError` and `untestable` to `Ignored`, so they are in the report
-   file even though the filter drops them. The [HTML report](07-reports.md) shows them.
-2. **Use `--report` alongside `--fail-under`, never instead of it.** The exit code is what
-   stops a broken run. The report is only visibility.
+1. **Use `--sonar-report` alongside `--fail-under`, never instead of it.** The exit code is
+   what stops a broken run. The report is only visibility.
+2. Keep `--html-report` or `--report` for the full picture. Sonar sees survivors; those two
+   show `error` and `untestable` counts, and the [HTML report](07-reports.md) puts them above
+   the score where they cannot be missed.
 
 ## Limits
 
-- **No mutation score reaches SonarQube.** The filter drops everything that is not a
-  survivor, so Sonar sees issues and never a percentage. A real metric needs the plugin path,
-  and that is impossible on SonarQube Cloud.
+- **No mutation score reaches SonarQube.** Generic import creates *issues*, and a percentage
+  would be a *measure*. There is no import path for measures — `api/custom_measures` was
+  removed in 8.2 — so a real metric needs the plugin path, and that is impossible on
+  SonarQube Cloud. The score stays in the terminal, the exit code and the HTML report.
 - **External issues cannot be managed in quality profiles.** They do not appear on the Rules
   page, they cannot be marked false positive in Sonar, and they cannot be filtered out of a
   generic "new issues > 0" gate. A team that wants visibility without a hard block has no
   dial.
-- **jq is a real prerequisite.** It is preinstalled on GitHub-hosted runners, which is where
-  this is used, but a local Windows scan needs it fetched.
+- **The jq route needs jq.** It is preinstalled on GitHub-hosted runners, but a local Windows
+  scan has to fetch it. `--sonar-report` needs nothing but Angelo.
+- **Coverage is a separate import.** SonarQube runs nothing itself, so line coverage stays 0%
+  until `sonar.python.coverage.reportPaths` is pointed at a `coverage.xml`. `sonar.tests` only
+  classifies files as test code; it imports no coverage at all.
 - `sonar-stryker-plugin` consumes StrykerJS `event-recorder` streams rather than the JSON
   report, so it is not a shortcut either.

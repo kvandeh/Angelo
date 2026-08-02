@@ -329,6 +329,7 @@ exclude = []                         # globs to leave alone
 fail_under = 0                       # 0 means no threshold, exit 1 below this score
 report = ""                          # write the run here in the report schema, "" is off
 html_report = ""                     # write one self-contained HTML file here, "" is off
+sonar_report = ""                    # write SonarQube's issue import format here, "" is off
 ```
 
 Any field you leave out takes its default, so a config written by an older Angelo keeps
