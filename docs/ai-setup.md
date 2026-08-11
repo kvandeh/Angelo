@@ -124,7 +124,7 @@ jobs:
         run: |
           pip install -e ".[test]"
           pip install coverage
-          pip install --index-url https://test.pypi.org/simple/ "angelo==0.1.0"
+          pip install --index-url https://test.pypi.org/simple/ "angelo==0.2.2"
 
       - name: Mutate what this branch adds
         run: angelo exec --diff-base --fail-under 70 --html-report angelo.html
