@@ -683,10 +683,12 @@ reads as clear.
   limits. Update the relevant note in the same pull request when a feature or a number
   changes. The README stays a front page and links out.
 - **A numbered page is a note** in that shape; **an un-numbered page is a route.**
-  `quick-start.md` and `integrations.md` are the two routes, and they answer the only
-  question a stranger has: am I running this, or wiring it into something? They sit
-  adjacent and ungrouped in the nav, because hiding either behind a click defeats the
-  split.
+  `quick-start.md`, `integrations.md` and `ai-setup.md` are the three routes, and they
+  answer the only question a stranger has: am I running this, wiring it into something, or
+  asking an agent to wire it in? They sit adjacent and ungrouped in the nav, because hiding
+  any of them behind a click defeats the split. `ai-setup.md` is written to be pasted into
+  an agent rather than read, which is why it carries instruction blocks the other two do
+  not.
 - Mermaid diagrams render through the `pymdownx.superfences` custom fence.
 - The docs site is **Zensical** (`zensical.toml`), the Material for MkDocs team's
   Rust-core successor; Material itself is end-of-life on 2026-11-05. Build with
