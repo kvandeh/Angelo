@@ -9,14 +9,17 @@ repo_name = "kvandeh/angelo"
 # The social icons carry the links, so the text does not repeat them.
 copyright = "Written and owned by <strong>Kieran van der Heijde</strong>"
 
-# Two routes first, then the notes. A numbered page is a note in the
+# The routes first, then the notes. A numbered page is a note in the
 # abstract/background/method/result/limits shape; an un-numbered page is a
-# route. The two routes sit adjacent and ungrouped so both are visible at first
-# paint -- hiding either one behind a click defeats the split.
+# route. The routes sit adjacent and ungrouped so all three are visible at first
+# paint -- hiding any of them behind a click defeats the split. They answer the
+# only question a stranger has: am I running this, wiring it into something, or
+# asking an agent to wire it in for me?
 nav = [
   { "Home" = "index.md" },
   { "Run it locally" = "quick-start.md" },
   { "Integrations" = "integrations.md" },
+  { "Setting it up with an AI agent" = "ai-setup.md" },
   { "Batch mutating" = "01-batch-mutating.md" },
   { "Test selection" = "02-test-selection.md" },
   { "Warm workers" = "03-warm-workers.md" },

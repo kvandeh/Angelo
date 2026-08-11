@@ -314,8 +314,16 @@ failing tests *and* no way to route around them. Install `coverage`, keep the de
 
 **Every mutant is `error`.** Your test command is probably wrong. Run it by hand first.
 
+**Every mutant survived and the score is 0.0%.** Your project's pytest `addopts` loads a
+plugin that takes the coverage run over — pytest-cov or pytest-xdist, usually. Angelo warns
+that the coverage it collected matched no mutant at all. The fix is one flag in
+`test_command`: see
+[neutralising a plugin](ai-setup.md#neutralising-a-plugin-in-addopts).
+
 **Scores drift between runs.** Set `warm_workers = false` and try again. If that fixes
-it, the warm process is carrying state between mutants and it is worth reporting.
+it, the warm process is carrying state between mutants and it is worth reporting. The same
+setting is required whenever `test_command` carries extra pytest arguments, because the warm
+worker does not pass them on.
 
 **"No matching distribution found for angelo."** There is no wheel for your platform, and
 there is deliberately no sdist, so pip fails immediately rather than compiling Rust for five

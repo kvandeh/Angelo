@@ -118,19 +118,24 @@ pub fn run(options: Options, bars: &MultiProgress) -> Result<ExitCode> {
     diagnostics.fact("per-test coverage", on_or_off(coverage.is_some()));
 
     let (testable, untested) = split_untested(pending, coverage);
+    // Before the statuses are written, or resuming would find nothing pending
+    // and report the fabricated score this refuses to print.
+    if coverage.is_some() && testable.is_empty() && !untested.is_empty() {
+        bail!(
+            "per-test coverage was collected but matched no mutant at all, so every mutant would \
+             survive without a run and the score would measure nothing.\nTwo things do this. A \
+             pytest plugin in the project's own addopts takes the coverage run over -- pytest-cov \
+             through --cov, pytest-xdist through -n auto -- in which case add `--no-cov` or `-o \
+             addopts=` to test_command, alongside `warm_workers = false`. Otherwise `paths` names \
+             code the suite never imports."
+        );
+    }
     if !untested.is_empty() {
         database.set_status(&untested, Status::Survived)?;
         diagnostics.note(format!(
             "{} mutants sit on lines no test executes, survived without a single run",
             untested.len()
         ));
-        if coverage.is_some() && testable.is_empty() {
-            diagnostics.warn(
-                "per-test coverage was collected but matched no mutant at all, so every mutant \
-                 survived without a run and the score below measures nothing. Check that `paths` \
-                 names the same code the suite imports.",
-            );
-        }
     }
 
     let (testable, untestable) = split_untestable(testable, &baseline, config.test_selection)?;
