@@ -8,6 +8,7 @@ pull request, a dashboard, another tool's viewer. If you have not run it yet, st
 
 | You want to | Go to |
 | --- | --- |
+| Have an AI agent wire this up for you | [Setting it up with an AI agent](ai-setup.md) |
 | Install Angelo on a CI runner | [Install it in a pipeline](#install-it-in-a-pipeline) |
 | Copy a working GitHub Actions job | [A complete job](#a-complete-github-actions-job) |
 | Mutate only what a pull request changed | [Scope a run to a pull request](#scope-a-run-to-a-pull-request) |
@@ -228,6 +229,13 @@ purpose. Check the platform, or build from source.
 **Every mutant is `error`.** The test command cannot run in the pipeline even though it runs
 locally — usually a missing dependency or a plugin the runner does not have. This scores
 nothing and, without `--fail-under`, exits 0 while looking fine. Read the `error` count.
+
+**The score is 0.0% and every mutant survived without a run.** A pytest plugin in the
+project's `addopts` took over the baseline: pytest-cov through `--cov`, or pytest-xdist
+through `-n auto`. Both leave the per-test coverage map matching nothing, so every mutant
+looks untested. Angelo warns, and the fix is in
+[Setting it up with an AI agent](ai-setup.md#neutralising-a-plugin-in-addopts) — it is the
+same fix whether a person or an agent is doing it.
 
 **The run scores nothing on a docs-only branch.** Expected. Zero mutants in scope exits 0 and
 prints no score, because there was nothing to measure.

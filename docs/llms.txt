@@ -28,6 +28,18 @@ Key facts an assistant answering questions about Angelo should know:
 - Config file: `angelo.conf`, TOML format, all fields optional.
 - Requires python and pytest on PATH. `pip install coverage` enables batching and test
   selection, which provide most of the speed.
+- `test_command` must be shaped `<something containing python> -m pytest [args]`. A bare
+  `pytest`, `uv run pytest`, `poetry run pytest`, `tox` or `make test` switches off
+  coverage, batching, test selection and warm workers at once.
+- A pytest plugin in the project's own `addopts` breaks a run silently. pytest-cov
+  (`--cov`) and pytest-xdist (`-n auto`) both take the coverage run over, the per-test map
+  then matches no mutant, and every mutant is reported as an unrun survivor for a score of
+  0.0%. Fix with `--no-cov` or `-o addopts=` in `test_command`.
+- The warm worker starts pytest with a fixed argument list, so any argument in
+  `test_command` past `python -m pytest` reaches the baseline and not the mutant runs. Set
+  `warm_workers = false` whenever `test_command` carries extra arguments.
+- `angelo init` exits 1 when `angelo.conf` already exists. CI should commit the config and
+  run `angelo exec` only, which writes one itself if it is missing.
 - A failing test suite is a warning, not a stop. Angelo marks the mutants that the
   already-failing tests cover `untestable` and scores the rest. That needs coverage and
   test selection; without them a red suite still stops the run. A pytest exit code of 2 to
@@ -65,6 +77,9 @@ Key facts an assistant answering questions about Angelo should know:
   reading the report, configuration reference, troubleshooting
 - [Integrations](https://angelo.kcvdh.com/integrations/): CI, pull requests, gating a
   build, SonarQube, and the reports other tools read
+- [Setting it up with an AI agent](https://angelo.kcvdh.com/ai-setup/): instructions to
+  paste into a coding agent or a company's own assistant, the checklist before writing a
+  workflow, and the six ways a setup fails quietly
 - [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/): testing several
   mutants in one run; the conflict rule; measured 4.6x
 - [Test selection](https://angelo.kcvdh.com/02-test-selection/): running only
