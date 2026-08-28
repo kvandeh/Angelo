@@ -10,3 +10,11 @@ site/
 .zensical/
 .cache
 .claude
+
+# The corpus experiment: its scripts, manifest and board are the record worth
+# keeping. Its venv, per-run logs, generated reports and results are not.
+experiment/.venv/
+experiment/logs/
+experiment/reports/
+experiment/state/
+experiment/results.jsonl

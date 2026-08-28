@@ -179,22 +179,50 @@ pub fn run_baseline(
     junit_path: &Path,
 ) -> Result<(Duration, Vec<TestCase>)> {
     let started = Instant::now();
+    let program = &test_command[0];
+    log::debug!("baseline: {}", test_command.join(" "));
     let output = build_command(test_command, project_root)?
         .arg(format!("--junit-xml={}", junit_path.display()))
         .output()
-        .context("running the baseline suite (is python on PATH?)")?;
+        .with_context(|| format!("running the baseline suite, could not start {program}"))?;
     let code = output.status.code().map(i64::from).unwrap_or(-1);
     if !output.status.success() && code != RED_SUITE {
         bail!(
             "angelo could not run the baseline suite, pytest exited {code}.\n{}\n\n{}",
             diagnose_baseline(code),
-            tail(&String::from_utf8_lossy(&output.stdout), 40)
+            said(&output, 40)
         );
     }
     let elapsed = started.elapsed();
-    let xml = fs::read_to_string(junit_path)
-        .with_context(|| format!("reading {}", junit_path.display()))?;
+    // pytest writes the report even when the suite is red, so a missing one
+    // means the command never reached pytest at all. The usual cause is an
+    // interpreter without pytest, which exits 1 -- indistinguishable from a
+    // failing test by exit code alone, and the reason this used to surface as
+    // a bare "file not found" pointing at angelo's own directory.
+    let Ok(xml) = fs::read_to_string(junit_path) else {
+        bail!(
+            "angelo ran the baseline suite but pytest wrote no report to {}.\n\
+             pytest exited {code}, so the command most likely never reached pytest: \
+             check that test_command in angelo.conf names an interpreter with pytest \
+             installed. Angelo used {}.\n\n{}",
+            junit_path.display(),
+            resolve_on_path(program).display(),
+            said(&output, 40)
+        );
+    };
     Ok((elapsed, parse_testcases(&xml)?))
+}
+
+/// What the run actually said. pytest reports on stdout, but an interpreter's
+/// own complaint -- `No module named pytest` -- goes to stderr, and that is
+/// precisely the case a missing report points at, so stderr is preferred when
+/// there is any.
+fn said(output: &std::process::Output, lines: usize) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !stderr.trim().is_empty() {
+        return tail(stderr.trim(), lines);
+    }
+    tail(&String::from_utf8_lossy(&output.stdout), lines)
 }
 
 /// pytest's exit code for "the suite ran and some of it failed", as opposed to
@@ -295,7 +323,7 @@ fn build_command(test_command: &[String], cwd: &Path) -> Result<Command> {
     let (program, args) = test_command
         .split_first()
         .context("test_command is empty")?;
-    let mut command = Command::new(program);
+    let mut command = Command::new(resolve_on_path(program));
     command.args(args).current_dir(cwd);
     // The copy must win over a `pip install -e` of the real project: PYTHONPATH
     // entries come before site-packages. src/ covers src-layout projects.
@@ -316,6 +344,52 @@ pub fn baseline_junit_path(angelo_dir: &Path) -> PathBuf {
     angelo_dir.join("baseline-junit.xml")
 }
 
+/// The interpreter the caller meant, found the way a shell would find it.
+///
+/// Windows `CreateProcess` searches the calling executable's own directory
+/// **before** PATH. Angelo ships as a wheel, so `angelo.exe` lives in a venv's
+/// `Scripts/` next to that venv's `python.exe`; installed anywhere but the
+/// project's own venv — pipx, `uv tool`, a shared tools venv — a bare `python`
+/// then resolves to angelo's neighbour instead of the project's. That
+/// interpreter has no pytest, exits 1, and looks exactly like a failing test.
+/// Resolving against PATH here makes the lookup the same on every platform.
+pub(crate) fn resolve_on_path(program: &str) -> PathBuf {
+    let named = Path::new(program);
+    if named.is_absolute() || named.components().count() > 1 {
+        return named.to_path_buf();
+    }
+    let Some(path) = std::env::var_os("PATH") else {
+        return named.to_path_buf();
+    };
+    let names = executable_names(program, std::env::var("PATHEXT").ok().as_deref());
+    std::env::split_paths(&path)
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| named.to_path_buf())
+}
+
+/// The filenames one bare program name can have. Windows spells an executable
+/// with an extension from PATHEXT, so `python` is really `python.exe`; a name
+/// that already carries one of those is left alone, and so is `python3.12`,
+/// whose `.12` is a version rather than an extension. PATHEXT is unset off
+/// Windows, which leaves the name as written.
+fn executable_names(program: &str, pathext: Option<&str>) -> Vec<String> {
+    let Some(pathext) = pathext else {
+        return vec![program.to_string()];
+    };
+    let extensions: Vec<&str> = pathext.split(';').filter(|ext| !ext.is_empty()).collect();
+    let lowercased = program.to_ascii_lowercase();
+    if extensions
+        .iter()
+        .any(|ext| lowercased.ends_with(&ext.to_ascii_lowercase()))
+    {
+        return vec![program.to_string()];
+    }
+    std::iter::once(program.to_string())
+        .chain(extensions.iter().map(|ext| format!("{program}{ext}")))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,6 +399,60 @@ mod tests {
         <testcase classname="test_calc" name="test_crash" time="1.250"><error message="import"/></testcase>
         <testcase classname="test_calc" name="test_fine"/>
     </testsuite></testsuites>"#;
+
+    #[test]
+    fn windows_spells_a_bare_name_with_every_pathext() {
+        assert_eq!(
+            executable_names("python", Some(".COM;.EXE;.BAT")),
+            ["python", "python.COM", "python.EXE", "python.BAT"]
+        );
+    }
+
+    #[test]
+    fn a_name_that_already_has_an_extension_keeps_it() {
+        assert_eq!(
+            executable_names("python.exe", Some(".COM;.EXE;.BAT")),
+            ["python.exe"]
+        );
+    }
+
+    /// The `.12` is a version, not an extension, so it still needs `.EXE` tried.
+    #[test]
+    fn a_versioned_name_is_not_mistaken_for_an_extension() {
+        assert_eq!(
+            executable_names("python3.12", Some(".EXE")),
+            ["python3.12", "python3.12.EXE"]
+        );
+    }
+
+    #[test]
+    fn without_pathext_the_name_stands_alone() {
+        assert_eq!(executable_names("python", None), ["python"]);
+    }
+
+    /// Anything with a separator is a path the user chose; PATH must not
+    /// second-guess it, or an absolute interpreter would stop being absolute.
+    #[test]
+    fn a_path_resolves_to_itself() {
+        assert_eq!(
+            resolve_on_path("/usr/bin/python3"),
+            PathBuf::from("/usr/bin/python3")
+        );
+        assert_eq!(
+            resolve_on_path("./.venv/bin/python"),
+            PathBuf::from("./.venv/bin/python")
+        );
+    }
+
+    /// A name PATH does not hold comes back unchanged, so the spawn error names
+    /// what the user actually wrote rather than a path angelo invented.
+    #[test]
+    fn an_unfindable_name_survives_unchanged() {
+        assert_eq!(
+            resolve_on_path("definitely-not-an-interpreter-xyz"),
+            PathBuf::from("definitely-not-an-interpreter-xyz")
+        );
+    }
 
     #[test]
     fn exit_codes_map_to_statuses() {
