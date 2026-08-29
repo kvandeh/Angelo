@@ -139,8 +139,12 @@ impl Run {
     }
 }
 
-/// `add` is tested and killable, `is_big` is tested but its mutant survives,
-/// `unused` is never executed by any test.
+/// `add` is tested and killable, `is_big` is tested but one of its mutants
+/// survives, `unused` is never executed by any test.
+///
+/// Seven mutants: each of the three statements can be deleted, `+` and `*` each
+/// swap, and `>` takes both its boundary shift and its negation. The literals
+/// are untouched, because constant replacement is off by default.
 const CALCULATOR: &str = "\
 def add(a, b):
     return a + b
@@ -173,8 +177,10 @@ fn calculator_project(name: &str) -> Project {
         .write("test_calculator.py", TESTS)
 }
 
-/// One mutable token, `not`, and removing it spins forever on `spin(True)`.
-/// Any other operator here would add mutants that are not the point.
+/// One mutant, and it spins forever on `spin(True)`. Removing a `not` is unary
+/// operator insertion, which the default set leaves out on the evidence, so
+/// this project pins `operators` to the one family it is about. Any other
+/// family here would add mutants that are not the point.
 const SPINNER: &str = "\
 def spin(flag):
     while not flag:
@@ -202,7 +208,8 @@ fn spins_until_the_budget_runs_out(name: &str, warm_workers: bool) {
             &format!(
                 "paths = [\".\"]\ntest_command = \"python -m pytest\"\nworkers = 1\n\
                  batch_size = 1\ntest_selection = true\nwarm_workers = {warm_workers}\n\
-                 warm_recycle_after = 50\ntimeout_factor = 2.0\n"
+                 warm_recycle_after = 50\ntimeout_factor = 2.0\n\
+                 operators = [\"UnaryOperator\"]\n"
             ),
         );
 
@@ -264,10 +271,10 @@ fn exec_scores_the_suite_and_names_survivors() {
     let project = calculator_project("exec");
     let stdout = project.angelo(&["exec", "--workers", "2"]).expect_success();
 
-    assert!(stdout.contains("enumerated 5 mutants"), "{stdout}");
-    assert!(stdout.contains("killed: 1"), "{stdout}");
-    assert!(stdout.contains("survived: 4"), "{stdout}");
-    assert!(stdout.contains("score: 20.0%"), "{stdout}");
+    assert!(stdout.contains("enumerated 7 mutants"), "{stdout}");
+    assert!(stdout.contains("killed: 4"), "{stdout}");
+    assert!(stdout.contains("survived: 3"), "{stdout}");
+    assert!(stdout.contains("score: 57.1%"), "{stdout}");
     // The mutant of `unused` is on a line no test runs.
     assert!(stdout.contains("survived without a single run"), "{stdout}");
     assert!(stdout.contains("> -> >="), "{stdout}");
@@ -292,7 +299,7 @@ fn exec_resumes_instead_of_rerunning() {
     assert!(stdout.contains("resuming"), "{stdout}");
     assert!(stdout.contains("nothing pending"), "{stdout}");
     assert!(!stdout.contains("baseline"), "{stdout}");
-    assert!(stdout.contains("killed: 1"), "{stdout}");
+    assert!(stdout.contains("killed: 4"), "{stdout}");
 }
 
 #[test]
@@ -300,15 +307,16 @@ fn init_only_enumerates_without_running() {
     let project = calculator_project("init-only");
     let stdout = project.angelo(&["exec", "--init-only"]).expect_success();
 
-    assert!(stdout.contains("5 mutants pending"), "{stdout}");
+    assert!(stdout.contains("7 mutants pending"), "{stdout}");
     assert!(!stdout.contains("baseline"), "{stdout}");
 
     let resumed = project.angelo(&["exec"]).expect_success();
-    assert!(resumed.contains("killed: 1"), "{resumed}");
+    assert!(resumed.contains("killed: 4"), "{resumed}");
 }
 
 /// `add` is covered by a test that already fails, `double` by one that passes.
 /// Both of `double`'s mutants die, so a red suite still produces a real score.
+/// Each function contributes two: its operator swap and its deletion.
 const HALF_RED: &str = "\
 def add(a, b):
     return a + b
@@ -345,9 +353,10 @@ fn a_red_baseline_scores_what_the_failing_tests_do_not_cover() {
 
     assert!(output.contains("baseline RED"), "{output}");
     assert!(output.contains("1 tests were already failing"), "{output}");
-    // add's `+` is covered by the red test alone, so no run could judge it.
-    assert!(output.contains("1 mutants set untestable"), "{output}");
-    assert!(output.contains("untestable: 1"), "{output}");
+    // add's two mutants are covered by the red test alone, so no run could
+    // judge either of them.
+    assert!(output.contains("2 mutants set untestable"), "{output}");
+    assert!(output.contains("untestable: 2"), "{output}");
     // double's two mutants are covered by a green test and die there.
     assert!(output.contains("killed: 2"), "{output}");
     assert!(output.contains("score: 100.0%"), "{output}");
@@ -417,7 +426,7 @@ fn diff_mode_skips_an_unchanged_tree() {
     let stdout = project.angelo(&["exec", "--diff"]).expect_success();
 
     assert!(
-        stdout.contains("0 of 5 mutants sit on changed lines"),
+        stdout.contains("0 of 7 mutants sit on changed lines"),
         "{stdout}"
     );
     assert!(stdout.contains("nothing changed"), "{stdout}");
@@ -435,15 +444,15 @@ fn diff_mode_mutates_only_the_changed_line() {
     .unwrap();
 
     let stdout = project.angelo(&["exec", "--diff", "HEAD"]).expect_success();
-    assert!(stdout.contains("enumerated 5 mutants"), "{stdout}");
+    assert!(stdout.contains("enumerated 7 mutants"), "{stdout}");
     assert!(
-        stdout.contains("2 of 5 mutants sit on changed lines"),
+        stdout.contains("3 of 7 mutants sit on changed lines"),
         "{stdout}"
     );
-    // Only is_big's comparison is in scope: add's `+` is never even considered.
+    // Only is_big's line is in scope: add's `+` is never even considered.
     assert!(stdout.contains("> -> >="), "{stdout}");
     assert!(!stdout.contains("+ -> -"), "{stdout}");
-    assert!(stdout.contains("survived: 2"), "{stdout}");
+    assert!(stdout.contains("survived: 1"), "{stdout}");
 }
 
 /// A pull request is many commits, so the unit that matters is the branch
@@ -471,12 +480,12 @@ fn diff_base_mutates_what_the_branch_net_added() {
     // Only is_big's line survives the round trip: triple came and went, and
     // add was never touched.
     assert!(
-        stdout.contains("2 of 5 mutants sit on changed lines"),
+        stdout.contains("3 of 7 mutants sit on changed lines"),
         "{stdout}"
     );
     assert!(stdout.contains("> -> >="), "{stdout}");
     assert!(!stdout.contains("+ -> -"), "{stdout}");
-    assert!(stdout.contains("survived: 2"), "{stdout}");
+    assert!(stdout.contains("survived: 1"), "{stdout}");
 }
 
 /// The bug that `--diff-base` exists to fix: a two-dot diff sees the base
@@ -502,12 +511,12 @@ fn diff_base_ignores_what_the_base_gained() {
     let stdout = project
         .angelo(&["exec", "--init-only", "--diff-base", "base"])
         .expect_success();
-    // Two dots would find four: unused's line differs from base too.
+    // Two dots would find five: unused's line differs from base too.
     assert!(
-        stdout.contains("2 of 5 mutants sit on changed lines"),
+        stdout.contains("3 of 7 mutants sit on changed lines"),
         "{stdout}"
     );
-    assert!(stdout.contains("2 mutants pending"), "{stdout}");
+    assert!(stdout.contains("3 mutants pending"), "{stdout}");
 }
 
 /// Silently preferring one flag over the other is a way to score the wrong
@@ -631,7 +640,8 @@ fn fail_under_gates_the_score() {
 /// Mutating `break` to `return` at module level is a syntax error, so this
 /// project's one mutant can only come back as `error`. That leaves no score at
 /// all, which is the signature of a broken test command and must never satisfy
-/// a threshold.
+/// a threshold. `operators` is pinned to the family that plants it: deletion
+/// would add three mutants that run perfectly well and give the run a score.
 const LOOPER: &str = "\
 def values():
     return [None]
@@ -645,6 +655,7 @@ for value in values():
 fn fail_under_rejects_a_run_it_could_not_score() {
     let project = Project::new("fail-under-unmeasured")
         .write("looper.py", LOOPER)
+        .write("angelo.conf", "operators = [\"StatementSwap\"]\n")
         .write(
             "test_looper.py",
             "from looper import values\n\n\ndef test_values():\n    assert values() == [None]\n",
@@ -727,7 +738,7 @@ fn the_report_files_agree_with_the_terminal() {
             "run.html",
         ])
         .expect_report();
-    assert!(stdout.contains("score: 20.0%"), "{stdout}");
+    assert!(stdout.contains("score: 57.1%"), "{stdout}");
 
     let json = fs::read_to_string(project.root.join("run.json")).expect("run.json");
     assert!(json.contains("\"schemaVersion\": \"2.0\""), "{json}");
@@ -735,13 +746,13 @@ fn the_report_files_agree_with_the_terminal() {
         json.contains("\"framework\": { \"name\": \"Angelo\""),
         "{json}"
     );
-    // 1 killed and 4 survived, and the schema splits those four: the two on
+    // 4 killed and 3 survived, and the schema splits those three: the two on
     // `unused` are on a line no test runs at all, which is a different finding
-    // from the two a test ran and failed to notice.
-    assert_eq!(json.matches("\"status\": \"Killed\"").count(), 1, "{json}");
+    // from the one a test ran and failed to notice.
+    assert_eq!(json.matches("\"status\": \"Killed\"").count(), 4, "{json}");
     assert_eq!(
         json.matches("\"status\": \"Survived\"").count(),
-        2,
+        1,
         "{json}"
     );
     assert_eq!(
@@ -755,7 +766,7 @@ fn the_report_files_agree_with_the_terminal() {
     assert!(json.contains("\"calculator.py\""), "{json}");
 
     let html = fs::read_to_string(project.root.join("run.html")).expect("run.html");
-    assert!(html.contains("20.0%"), "the html score must match stdout");
+    assert!(html.contains("57.1%"), "the html score must match stdout");
     assert!(!html.contains("{{"), "a placeholder went unfilled");
     assert!(
         !html.contains("<script"),
@@ -795,5 +806,5 @@ fn a_report_is_written_without_running_anything() {
         .expect_success();
 
     let json = fs::read_to_string(project.root.join("run.json")).expect("run.json");
-    assert_eq!(json.matches("\"status\": \"Pending\"").count(), 5, "{json}");
+    assert_eq!(json.matches("\"status\": \"Pending\"").count(), 7, "{json}");
 }

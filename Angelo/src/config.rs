@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::mutate::{DEFAULT_ARID, DEFAULT_FAMILIES, Operators};
+
 pub const CONFIG_FILE: &str = "angelo.conf";
 
 pub const SKIP_DIRS: &[&str] = &[
@@ -59,6 +61,17 @@ pub struct Config {
     /// Write the survivors to this path in SonarQube's generic issue import
     /// format. Empty = off.
     pub sonar_report: String,
+    /// Which operator families to plant mutants from, named the way a report
+    /// names them. The default leaves out the three the evidence does not
+    /// support; `mutate::FAMILIES` is the whole list.
+    pub operators: Vec<String>,
+    /// Call names not worth mutating whatever the operator: logging, printing,
+    /// warning. Any dotted segment of a callee matching one of these turns the
+    /// whole statement away. Empty = mutate everything.
+    pub arid: Vec<String>,
+    /// Keep at most this many mutants on any one source line, dropping the rest
+    /// at random. 0 = keep every mutant.
+    pub per_line_cap: usize,
 }
 
 impl Default for Config {
@@ -79,6 +92,9 @@ impl Default for Config {
             report: String::new(),
             html_report: String::new(),
             sonar_report: String::new(),
+            operators: DEFAULT_FAMILIES.iter().map(|f| f.to_string()).collect(),
+            arid: DEFAULT_ARID.iter().map(|name| name.to_string()).collect(),
+            per_line_cap: 0,
         }
     }
 }
@@ -112,6 +128,14 @@ impl Config {
         std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
+    }
+
+    /// What this run will plant and where, with the family names checked
+    /// before a single file is parsed: an unknown one has to stop the run
+    /// rather than quietly shrink the pool.
+    pub fn operators(&self) -> Result<Operators> {
+        Operators::new(&self.operators, &self.arid)
+            .with_context(|| format!("reading operators from {CONFIG_FILE}"))
     }
 
     pub fn python_files(&self) -> Result<Sources> {
