@@ -88,7 +88,9 @@ function Write-Progress-State {
         updated_at = (Get-Date).ToString('o')
         completed = $Completed
     }
-    ($state | ConvertTo-Json -Depth 5) | Set-Content -Path $StateFile -Encoding utf8
+    # Same BOM trap as the config: a marked file is not what a plain JSON reader
+    # expects, and progress.json is read by the dashboard and by hand.
+    Write-TextFile -Path $StateFile -Lines (($state | ConvertTo-Json -Depth 5) -split "`r?`n")
 }
 
 # Windows PowerShell's -Encoding utf8 writes a BOM. A BOM in front of the first
