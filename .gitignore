@@ -21,3 +21,8 @@ experiment/results.jsonl
 # Timestamped backups the harness makes before each run. The one hand-recovered
 # copy of the destroyed 50-repo dataset is kept under its own name.
 experiment/results.jsonl.*-*.bak
+
+# Working documents that live here but are not part of the project. Word also
+# leaves a ~$ lock file beside an open one.
+*.docx
+~$*
