@@ -266,10 +266,52 @@ fail_under = 0                       # 0 means no threshold, exit 1 below this s
 report = ""                          # write the run here in the report schema, "" is off
 html_report = ""                     # write one self-contained HTML file here, "" is off
 sonar_report = ""                    # write SonarQube's issue import format here, "" is off
+operators = [...]                    # which operator families to plant; see below
+arid = ["log", "logger", "logging", "print", "warn", "warnings"]
+per_line_cap = 0                     # 0 keeps every mutant on a line
 ```
 
 Any field you leave out takes its default, so a config written by an older Angelo keeps
 working.
+
+### Choosing what to mutate
+
+`operators` names the families a run plants. The default is the set the empirical
+literature supports, which leaves out three that were on before: unary operator insertion
+and the two constant-replacement families, all of which measure poorly on survival,
+productivity and coupling to real faults. Turn one back on by listing it:
+
+```toml
+operators = [
+    "ArithmeticOperator", "AssignmentOperator", "BitwiseOperator",
+    "BlockStatement", "BooleanLiteral", "ConditionalExpression",
+    "EqualityOperator", "LogicalOperator", "MethodExpression",
+    "StatementSwap",
+    "StringLiteral",           # this project's faults live in its literals
+]
+```
+
+A name Angelo does not know **stops the run**, because accepting it silently would drop a
+whole family from the pool and report a higher score for the loss.
+
+`arid` names calls that exist for a person to read rather than for the program to compute
+with. Any dotted segment of the callee matching the list turns the whole statement away,
+and `__repr__` and `__str__` bodies go with it — so nothing inside
+`self.logger.info("got %d", n + 1)` is mutated. Set `arid = []` to mutate everything.
+
+`per_line_cap` keeps at most that many mutants on any one line, dropping the rest at
+random. It is the cheapest way to shrink a large pool without narrowing what is studied,
+and like `sample` it makes the score an estimate rather than a census.
+
+Angelo reports what both turned away, because a silent suppression raises a score the same
+way a silent exclusion does:
+
+```
+enumerated 412 mutants across 9 files, 38 skipped by operators and 21 as arid
+```
+
+The evidence behind every one of these choices is in
+[operators and sampling](06-operators-and-sampling.md).
 
 ### Excluding code you did not write
 

@@ -7,10 +7,10 @@ use indicatif::MultiProgress;
 use crate::batch;
 use crate::config::{self, Config};
 use crate::coverage::{self, Baseline, Coverage, TestCoverage};
-use crate::db::Database;
+use crate::db::{Database, get_random};
 use crate::diff::{ChangedLines, Scope};
 use crate::html;
-use crate::mutate::{self, Mutant, Status};
+use crate::mutate::{Mutant, Status};
 use crate::pytest::Budget;
 use crate::report::{self, Diagnostics, Phase, Progress};
 use crate::runner::TestRunner;
@@ -376,22 +376,37 @@ fn enumerate(
         );
     }
 
+    let mut operators = config.operators()?;
     let phase = Phase::counted(bars, "parsing", sources.files.len());
     let mut mutants = Vec::new();
     for file in &sources.files {
-        mutants.extend(mutate::enumerate_file(file)?);
+        mutants.extend(operators.enumerate_file(file)?);
         phase.tick();
     }
     phase.done();
 
     log::info!(
-        "enumerated {} mutants across {} files{}",
+        "enumerated {} mutants across {} files{}{}",
         mutants.len(),
         sources.files.len(),
-        sources.exclusion_note()
+        sources.exclusion_note(),
+        operators.note()
     );
     for pattern in sources.unused_patterns() {
         diagnostics.warn(format!("exclude pattern {pattern:?} matched nothing"));
+    }
+
+    if config.per_line_cap > 0 {
+        let before = mutants.len();
+        mutants = cap_per_line(mutants, config.per_line_cap);
+        if mutants.len() < before {
+            diagnostics.warn(format!(
+                "kept at most {} mutants per line, {} of {before} dropped at random, so the \
+                 score is an ESTIMATE over what was kept",
+                config.per_line_cap,
+                before - mutants.len()
+            ));
+        }
     }
 
     if let Some((changed, range)) = scoped {
@@ -407,6 +422,49 @@ fn enumerate(
         }
     }
     database.insert_mutants(&mutants)
+}
+
+/// Keep at most `cap` mutants on any one source line, chosen at random.
+///
+/// The largest reduction the literature records came from this and the arid
+/// list together: a median of 820 mutants per change fell to 7, and the share
+/// developers judged worth acting on rose from 15% to 89%. Like `sample` it
+/// makes the score an estimate rather than a census, so two capped runs are not
+/// comparable with each other.
+///
+/// Random rather than "the first few", because the enumeration order is the
+/// operator table's order: keeping the head of each line would study arithmetic
+/// forever and never look at a deletion.
+fn cap_per_line(mutants: Vec<Mutant>, cap: usize) -> Vec<Mutant> {
+    let mut random = get_random();
+    let mut draw: Vec<(u64, Mutant)> = mutants
+        .into_iter()
+        .map(|mutant| (random.next(), mutant))
+        .collect();
+    draw.sort_by(|left, right| {
+        (left.1.file.as_path(), left.1.line, left.0).cmp(&(
+            right.1.file.as_path(),
+            right.1.line,
+            right.0,
+        ))
+    });
+
+    let mut kept: Vec<Mutant> = Vec::new();
+    let mut on_this_line = 0;
+    for (_, mutant) in draw {
+        let same_line = kept
+            .last()
+            .is_some_and(|last| last.file == mutant.file && last.line == mutant.line);
+        on_this_line = if same_line { on_this_line + 1 } else { 0 };
+        if on_this_line < cap {
+            kept.push(mutant);
+        }
+    }
+    // Back into the order the database and every report expect.
+    kept.sort_by(|left, right| {
+        (left.file.as_path(), left.byte_start).cmp(&(right.file.as_path(), right.byte_start))
+    });
+    kept
 }
 
 /// Cap the pool by deleting mutants at random.
@@ -502,4 +560,56 @@ fn summarise(
     };
     println!("{failure}");
     Ok(ExitCode::FAILURE)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mutant(line: u32, byte_start: usize) -> Mutant {
+        Mutant {
+            id: 0,
+            file: PathBuf::from("calc.py"),
+            line,
+            byte_start,
+            byte_end: byte_start + 1,
+            original: "+".to_string(),
+            replacement: "-".to_string(),
+        }
+    }
+
+    #[test]
+    fn the_cap_counts_per_line_rather_than_per_file() {
+        let pool = vec![
+            mutant(1, 0),
+            mutant(1, 2),
+            mutant(1, 4),
+            mutant(2, 6),
+            mutant(3, 8),
+            mutant(3, 10),
+        ];
+        let kept = cap_per_line(pool, 2);
+        assert_eq!(kept.len(), 5);
+        assert_eq!(kept.iter().filter(|m| m.line == 1).count(), 2);
+        assert_eq!(kept.iter().filter(|m| m.line == 2).count(), 1);
+        assert_eq!(kept.iter().filter(|m| m.line == 3).count(), 2);
+    }
+
+    /// The database and every report read the pool in byte order, and a cap is
+    /// a filter rather than a reshuffle.
+    #[test]
+    fn the_cap_leaves_the_pool_in_byte_order() {
+        let pool = vec![mutant(1, 4), mutant(2, 0), mutant(3, 2)];
+        let kept = cap_per_line(pool, 1);
+        let offsets: Vec<usize> = kept.iter().map(|m| m.byte_start).collect();
+        assert_eq!(offsets, vec![0, 2, 4]);
+    }
+
+    /// A cap of one keeps exactly one mutant per line, which is the setting
+    /// Google's two-orders-of-magnitude reduction was measured at.
+    #[test]
+    fn a_cap_of_one_keeps_one_mutant_a_line() {
+        let pool = vec![mutant(1, 0), mutant(1, 2), mutant(1, 4), mutant(2, 6)];
+        assert_eq!(cap_per_line(pool, 1).len(), 2);
+    }
 }

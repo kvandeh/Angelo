@@ -31,11 +31,34 @@ impl Batch {
         }
     }
 
-    fn accepts(&self, covering: &HashSet<i64>, capacity: usize, host: Option<Host>) -> bool {
+    fn accepts(
+        &self,
+        mutant: &Mutant,
+        covering: &HashSet<i64>,
+        capacity: usize,
+        host: Option<Host>,
+    ) -> bool {
         !self.covering_tests.is_empty()
             && self.mutants.len() < capacity
             && self.covering_tests.is_disjoint(covering)
             && host.is_none_or(|host| !self.hosts.contains(&host))
+            && !self.overlaps(mutant)
+    }
+
+    /// Whether some member already rewrites bytes this mutant rewrites.
+    ///
+    /// Two token mutants never overlap, because two tokens never do. Deletion
+    /// and condition replacement rewrite whole nodes, so a batch can be offered
+    /// the deletion of `return a + b` and the swap of its `+`. Splicing applies
+    /// a batch back to front, and the outer edit would then be measured against
+    /// offsets the inner one had already moved: at best a corrupt file, at
+    /// worst a panic on a byte that is no longer a character boundary.
+    fn overlaps(&self, mutant: &Mutant) -> bool {
+        self.mutants.iter().any(|member| {
+            member.file == mutant.file
+                && member.byte_start < mutant.byte_end
+                && mutant.byte_start < member.byte_end
+        })
     }
 
     fn add(&mut self, mutant: Mutant, covering: HashSet<i64>, host: Option<Host>) {
@@ -74,7 +97,7 @@ pub fn compose(
         };
         let fits = batches
             .iter_mut()
-            .find(|batch| batch.accepts(&covering, batch_size, host));
+            .find(|batch| batch.accepts(&mutant, &covering, batch_size, host));
         match fits {
             Some(batch) => batch.add(mutant, covering, host),
             None => batches.push(Batch::open(mutant, covering, host)),
@@ -89,13 +112,16 @@ mod tests {
     use crate::db::CoverageRow;
     use std::path::PathBuf;
 
+    /// One byte each, and no two on the same one: these mutants are about
+    /// coverage, and two that overlapped would be refused for a reason the
+    /// test is not making.
     fn mutant(id: i64, line: u32) -> Mutant {
         Mutant {
             id,
             file: PathBuf::from("calc.py"),
             line,
-            byte_start: 0,
-            byte_end: 1,
+            byte_start: id as usize,
+            byte_end: id as usize + 1,
             original: "+".to_string(),
             replacement: "-".to_string(),
         }
@@ -139,6 +165,51 @@ mod tests {
             || {},
         );
         assert_eq!(sizes(&batches), [2]);
+    }
+
+    /// Deletion and condition replacement rewrite whole nodes, so a batch can
+    /// be offered two mutants of the same bytes. Splicing applies a batch back
+    /// to front, and the outer edit would land on offsets the inner one had
+    /// already moved.
+    #[test]
+    fn two_mutants_of_the_same_bytes_never_share_a_batch() {
+        let deletion = Mutant {
+            byte_start: 1,
+            byte_end: 20,
+            original: "return a + b".to_string(),
+            replacement: "pass".to_string(),
+            ..mutant(1, 1)
+        };
+        let inside = Mutant {
+            byte_start: 9,
+            byte_end: 10,
+            ..mutant(2, 2)
+        };
+        let batches = compose(vec![deletion, inside], Some(&coverage()), 8, None, || {});
+        assert_eq!(sizes(&batches), [1, 1]);
+    }
+
+    /// The guard is about bytes, not about files: two files' mutants may hold
+    /// the same offsets and still splice cleanly. Asked of the predicate
+    /// directly, since coverage is what decides whether two mutants are offered
+    /// to each other at all and this is not a question about coverage.
+    #[test]
+    fn the_same_offsets_in_two_files_do_not_overlap() {
+        let batch = Batch::solo(mutant(1, 1));
+        let same_file = Mutant {
+            byte_start: 1,
+            byte_end: 2,
+            ..mutant(2, 2)
+        };
+        assert!(batch.overlaps(&same_file));
+
+        let other_file = Mutant {
+            file: PathBuf::from("other.py"),
+            byte_start: 1,
+            byte_end: 2,
+            ..mutant(3, 3)
+        };
+        assert!(!batch.overlaps(&other_file));
     }
 
     #[test]
