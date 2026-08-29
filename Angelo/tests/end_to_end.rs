@@ -243,6 +243,22 @@ fn init_refuses_to_overwrite() {
     assert!(stderr.contains("already exists"));
 }
 
+/// A script that only checks whether angelo.conf exists afterwards reads that
+/// refusal as success and runs against a config from an earlier session. --force
+/// is how a caller says it meant to regenerate.
+#[test]
+fn init_force_overwrites() {
+    let project = Project::new("init-force");
+    project.angelo(&["init"]).expect_success();
+    fs::write(project.root.join("angelo.conf"), "paths = [\"stale\"]\n").unwrap();
+
+    project.angelo(&["init", "--force"]).expect_success();
+
+    let config = fs::read_to_string(project.root.join("angelo.conf")).unwrap();
+    assert!(config.contains("test_command"), "{config}");
+    assert!(!config.contains("stale"), "{config}");
+}
+
 #[test]
 fn exec_scores_the_suite_and_names_survivors() {
     let project = calculator_project("exec");
@@ -365,6 +381,31 @@ fn a_baseline_that_never_ran_still_stops() {
     assert!(
         stderr.contains("could not run the baseline suite"),
         "{stderr}"
+    );
+}
+
+/// The failure that cost a corpus run seven repos. An interpreter without
+/// pytest exits **1**, which is also what a red suite exits, so the run carried
+/// on and then failed reading a report nothing had written -- surfacing as a
+/// bare "reading .angelo/baseline-junit.xml", which points at angelo's own
+/// directory and never mentions the interpreter or what it said.
+#[test]
+fn a_baseline_that_wrote_no_report_blames_the_interpreter() {
+    let project = calculator_project("no-report").write(
+        "angelo.conf",
+        "paths = [\".\"]\ntest_command = \"python -m angelo_not_a_real_module\"\n",
+    );
+
+    let stderr = project.angelo(&["exec"]).expect_failure();
+
+    assert!(stderr.contains("wrote no report"), "{stderr}");
+    assert!(stderr.contains("pytest installed"), "{stderr}");
+    // The interpreter's own complaint lands on stderr, which the old code threw
+    // away: it quoted stdout only, and stdout here is empty.
+    assert!(stderr.contains("angelo_not_a_real_module"), "{stderr}");
+    assert!(
+        !stderr.contains("The system cannot find the file specified"),
+        "the missing report must not be the headline: {stderr}"
     );
 }
 

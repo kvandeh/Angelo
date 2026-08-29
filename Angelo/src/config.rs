@@ -307,9 +307,9 @@ fn segment_matches(pattern: &str, segment: &str) -> bool {
         .any(|at| segment_matches(after, &rest[at..]))
 }
 
-pub fn init() -> Result<()> {
-    if Path::new(CONFIG_FILE).exists() {
-        bail!("{CONFIG_FILE} already exists. Delete it first for a fresh one");
+pub fn init(force: bool) -> Result<()> {
+    if Path::new(CONFIG_FILE).exists() && !force {
+        bail!("{CONFIG_FILE} already exists. Delete it, or pass --force, for a fresh one");
     }
     let config = Config::detect();
     write(&config)?;

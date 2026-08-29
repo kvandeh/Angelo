@@ -64,6 +64,10 @@ angelo exec      # enumerates mutants, then runs them
 `init` writes a config you can edit. `exec` does the work and is resumable: interrupt it,
 run it again, and it picks up the pending mutants. To start over, delete `.angelo/`.
 
+`init` refuses to overwrite an `angelo.conf` that already exists, so re-running it cannot
+lose your edits. Pass `--force` to regenerate one from scratch — useful in a script, where
+a config left over from a previous run is otherwise picked up silently.
+
 ## Read the report
 
 ```
