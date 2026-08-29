@@ -75,6 +75,11 @@ def read(path):
     for mark, encoding in BOMS:
         if raw.startswith(mark):
             return raw.decode(encoding, "replace")
+    # No mark. UTF-16 without one is still obvious: ASCII text in it carries a
+    # NUL beside every character, and which side says which endianness.
+    if b"\x00" in raw[:200]:
+        wide = "utf-16-be" if raw[:1] == b"\x00" else "utf-16-le"
+        return raw.decode(wide, "replace")
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -85,13 +90,16 @@ def package_for(module, project):
     top = module.split(".")[0]
     if not top or top in NEVER_INSTALL:
         return None
+    package = PACKAGE_OF.get(top, top.replace("_", "-"))
     # A project failing to import itself means its own build failed. Pulling the
-    # same name off PyPI would paper over that with a stranger's release.
-    if project and top.replace("_", "-").lower() == project.replace("_", "-").lower():
-        return None
-    if top in PACKAGE_OF:
-        return PACKAGE_OF[top]
-    return top.replace("_", "-")
+    # same name off PyPI would paper over that with a stranger's release. Both
+    # spellings have to be checked: the pyyaml repo imports `yaml`, so comparing
+    # only the import name would have reinstalled it over its own broken build.
+    if project:
+        theirs = project.replace("_", "-").lower()
+        if theirs in (top.replace("_", "-").lower(), package.lower()):
+            return None
+    return package
 
 
 def wanted(text, project):

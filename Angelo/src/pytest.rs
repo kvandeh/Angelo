@@ -354,14 +354,28 @@ pub fn baseline_junit_path(angelo_dir: &Path) -> PathBuf {
 /// interpreter has no pytest, exits 1, and looks exactly like a failing test.
 /// Resolving against PATH here makes the lookup the same on every platform.
 pub(crate) fn resolve_on_path(program: &str) -> PathBuf {
+    resolve_within(
+        program,
+        std::env::var_os("PATH"),
+        std::env::var("PATHEXT").ok().as_deref(),
+    )
+}
+
+/// The search itself, over a PATH handed in rather than read from the process,
+/// so a test can prove *which* directory won without touching global state.
+fn resolve_within(
+    program: &str,
+    path: Option<std::ffi::OsString>,
+    pathext: Option<&str>,
+) -> PathBuf {
     let named = Path::new(program);
     if named.is_absolute() || named.components().count() > 1 {
         return named.to_path_buf();
     }
-    let Some(path) = std::env::var_os("PATH") else {
+    let Some(path) = path else {
         return named.to_path_buf();
     };
-    let names = executable_names(program, std::env::var("PATHEXT").ok().as_deref());
+    let names = executable_names(program, pathext);
     std::env::split_paths(&path)
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|candidate| candidate.is_file())
@@ -451,6 +465,70 @@ mod tests {
         assert_eq!(
             resolve_on_path("definitely-not-an-interpreter-xyz"),
             PathBuf::from("definitely-not-an-interpreter-xyz")
+        );
+    }
+
+    /// One directory holding a file named `program`, for the PATH tests.
+    fn dir_holding(name: &str, program: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("angelo-path-{name}"));
+        fs::create_dir_all(&dir).expect("creating a PATH directory");
+        fs::write(dir.join(program), b"").expect("creating a fake interpreter");
+        dir
+    }
+
+    /// The regression this whole function exists for. Windows CreateProcess
+    /// searches the calling executable's own directory *first*, so angelo
+    /// installed in its own venv ran the `python.exe` beside angelo.exe instead
+    /// of the project's. The answer must come from PATH and nowhere else.
+    #[test]
+    fn the_interpreter_comes_from_path() {
+        let wanted = dir_holding("wanted", "faux-python");
+        let path = std::env::join_paths([&wanted]).unwrap();
+
+        assert_eq!(
+            resolve_within("faux-python", Some(path), None),
+            wanted.join("faux-python")
+        );
+    }
+
+    /// PATH order is the whole contract: the project's venv goes on the front,
+    /// and whatever else holds the same name must lose to it.
+    #[test]
+    fn the_first_path_entry_wins() {
+        let first = dir_holding("first", "twice-python");
+        let second = dir_holding("second", "twice-python");
+        let path = std::env::join_paths([&first, &second]).unwrap();
+
+        assert_eq!(
+            resolve_within("twice-python", Some(path), None),
+            first.join("twice-python")
+        );
+    }
+
+    /// A directory that is not on PATH is never consulted, however close it
+    /// sits to angelo itself.
+    #[test]
+    fn a_directory_off_path_is_never_chosen() {
+        let off_path = dir_holding("offpath", "hidden-python");
+        let empty = std::env::temp_dir().join("angelo-path-empty");
+        fs::create_dir_all(&empty).expect("creating an empty PATH directory");
+        let path = std::env::join_paths([&empty]).unwrap();
+
+        let found = resolve_within("hidden-python", Some(path), None);
+        assert_eq!(found, PathBuf::from("hidden-python"));
+        assert_ne!(found, off_path.join("hidden-python"));
+    }
+
+    /// Windows finds `python` through `python.exe`, so the extension has to be
+    /// tried against each PATH entry rather than only the bare name.
+    #[test]
+    fn a_pathext_spelling_is_found_on_path() {
+        let dir = dir_holding("pathext", "winpython.EXE");
+        let path = std::env::join_paths([&dir]).unwrap();
+
+        assert_eq!(
+            resolve_within("winpython", Some(path), Some(".COM;.EXE")),
+            dir.join("winpython.EXE")
         );
     }
 

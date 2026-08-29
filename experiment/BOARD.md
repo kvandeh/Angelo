@@ -53,10 +53,40 @@ fixture written to pass.
 | A1 | six, bottle, flake8, with angelo.exe beside a pytest-less python.exe | **pass** — all three score; before, all three died on the missing report |
 | A2 | an interpreter that genuinely has no pytest | **pass** — names the interpreter and quotes `No module named pytest`; before, `reading .angelo\baseline-junit.xml` |
 | A3 | a project with a stale conf | **pass** — `init` refuses, `init --force` regenerates |
-| H1 | attrs, jinja, urllib3 (PEP 735 groups) | pending |
-| H2 | textual, rich | pending |
-| H3 | uvicorn, gunicorn | pending |
-| H4 | pytest, pyyaml | pending |
+| H1 | attrs, click, fastapi | **pass** — `group:tests` installed by name; attrs collects 1413 tests, click 32965 |
+| H2 | rich, attrs, jinja, textual | **pass** — the diagnostic names attrs, hypothesis, trio, pytest-asyncio+pytest-xdist respectively |
+| H3 | uvicorn, gunicorn, tqdm, filelock | **pass** — names pytest-xdist, pytest-cov, pytest-asyncio, pytest-asyncio |
+| H4 | attrs | **pass** — `described_version` reads 26.1.0 rather than 0.1.dev1 |
+| H8, H9 | attrs | **pass** — a finished run records `exit_code: 0` and status `ok`, not `angelo_failed` |
+| H10 | this machine | **pass** — 3.12 and 3.13 are in the registry but deleted from disk; both are skipped with a warning instead of silently falling through |
+
+## Tests that keep these fixed
+
+Every cause above that can be tested is, because all of them failed *silently* —
+a mis-decoded log simply finds no packages, a missing dependency group simply
+installs nothing, and a broken interpreter lookup simply reports a missing file.
+
+| Test | Locks |
+| --- | --- |
+| `pytest::tests::the_interpreter_comes_from_path` | A1: the answer comes from PATH |
+| `pytest::tests::the_first_path_entry_wins` | A1: the project's venv beats anything later |
+| `pytest::tests::a_directory_off_path_is_never_chosen` | A1: angelo's own directory is not consulted |
+| `pytest::tests::a_pathext_spelling_is_found_on_path` | A1: `python` still finds `python.exe` |
+| `end_to_end::a_baseline_that_wrote_no_report_blames_the_interpreter` | A2: the error names the interpreter and quotes stderr, and does *not* lead with the missing file |
+| `end_to_end::init_force_overwrites` | A3 |
+| `test_harness_scripts.py` (27 tests) | H1, H2, H3: log decoding in five encodings, import-name to package mapping, self-package exclusion, option/marker to plugin, PEP 735 group discovery and ranking |
+
+Run them with:
+
+```bash
+cd Angelo && cargo test
+python -m pytest experiment/scripts/test_harness_scripts.py
+```
+
+Three of those Python tests failed on first run and caught real bugs: a UTF-16
+log with no BOM decoded to nothing, and the pyyaml repo failing to import its own
+`yaml` package would have had PyYAML installed over its broken build, because
+only the import name was compared against the project and not the package name.
 
 ### A2, before and after
 
