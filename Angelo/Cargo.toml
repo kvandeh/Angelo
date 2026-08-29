@@ -1,7 +1,7 @@
 [package]
 name = "angelo"
 version = "0.3.1"
-edition = "2026"
+edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
