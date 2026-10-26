@@ -53,6 +53,20 @@ impl BatchOutcome {
         }
     }
 
+    /// Takes the members this outcome scored `survived` out of it, so they can
+    /// be confirmed alone, and leaves the kills to be recorded.
+    fn take_survivors(&mut self) -> Vec<i64> {
+        let survivors = self
+            .verdicts
+            .iter()
+            .filter(|(_, status)| *status == Status::Survived)
+            .map(|(id, _)| *id)
+            .collect();
+        self.verdicts
+            .retain(|(_, status)| *status != Status::Survived);
+        survivors
+    }
+
     fn failed(mutant: &Mutant, error: &anyhow::Error, duration: Duration) -> BatchOutcome {
         BatchOutcome {
             duration_ms: duration.as_millis() as u64,
@@ -174,21 +188,35 @@ impl<'a> Worker<'a> {
         }
     }
 
-    /// Green run: everyone survived. Red run: a failed test kills the batch
-    /// member it covers. When a result cannot be attributed (timeout, crash,
-    /// a failure no member explains), re-run smaller, a verdict must come from
-    /// a run that proves it.
+    /// Red run: a failed test kills the batch member it covers. A survivor is
+    /// only ever settled by a run of its own. When a result cannot be
+    /// attributed (timeout, crash, a failure no member explains), re-run
+    /// smaller, a verdict must come from a run that proves it.
     fn judge(&self, mutants: &[&Mutant]) -> Listening {
         let started = Instant::now();
-        let report = self.run_suite(mutants);
+        let report = self.run_suite(mutants, false);
         let elapsed = started.elapsed();
 
         if matches!(&report, Ok(report) if report.survived()) {
-            return self.outcomes.send(BatchOutcome::survived(mutants, elapsed));
+            if let [_] = mutants {
+                return self.outcomes.send(BatchOutcome::survived(mutants, elapsed));
+            }
+            // A batch runs the union of its members' tests, and on a suite
+            // with global state a test can pass beside other tests and fail
+            // alone. A false survivor is the gap this tool must never invent,
+            // so a batch may kill but not acquit.
+            return self.judge_each(mutants);
         }
         if mutants.len() > 1 {
-            if let Some(outcome) = self.attribute(&report, mutants, elapsed) {
-                return self.outcomes.send(outcome);
+            if let Some(mut outcome) = self.attribute(&report, mutants, elapsed) {
+                let survivors = outcome.take_survivors();
+                self.outcomes.send(outcome)?;
+                let survivors: Vec<&Mutant> = mutants
+                    .iter()
+                    .copied()
+                    .filter(|mutant| survivors.contains(&mutant.id))
+                    .collect();
+                return self.judge_each(&survivors);
             }
             // A timeout is the one outcome where halving is the wrong move.
             // Every half still holding the hang waits out the whole budget
@@ -196,21 +224,30 @@ impl<'a> Worker<'a> {
             // one run each pays for it once and lets the innocent members
             // finish at their own speed on their own smaller selections.
             if matches!(&report, Ok(report) if report.timed_out()) {
-                for mutant in mutants {
-                    self.judge(&[mutant])?;
-                }
-                return Ok(());
+                return self.judge_each(mutants);
             }
             let (left, right) = mutants.split_at(mutants.len() / 2);
             self.judge(left)?;
             return self.judge(right);
         }
 
+        let report = match report {
+            Ok(report) if report.timed_out() => self.run_suite(mutants, true),
+            other => other,
+        };
+        let elapsed = started.elapsed();
         let outcome = match report {
             Ok(report) => report.into_outcome(mutants[0], elapsed),
             Err(error) => BatchOutcome::failed(mutants[0], &error, elapsed),
         };
         self.outcomes.send(outcome)
+    }
+
+    fn judge_each(&self, mutants: &[&Mutant]) -> Listening {
+        for mutant in mutants {
+            self.judge(&[mutant])?;
+        }
+        Ok(())
     }
 
     /// Charge each failed test to the one batch member it covers. None when
@@ -233,14 +270,19 @@ impl<'a> Worker<'a> {
         ))
     }
 
-    fn run_suite(&self, mutants: &[&Mutant]) -> Result<RunReport> {
+    /// `retry` is the second run of a lone mutant that timed out, which gets
+    /// twice the budget before its timeout is believed.
+    fn run_suite(&self, mutants: &[&Mutant], retry: bool) -> Result<RunReport> {
         let selection = match self.coverage {
             Some(coverage) if self.runner.test_selection => coverage.select(mutants),
             _ => Selection::whole_suite(mutants.len() == 1),
         };
         // A run that names its tests is budgeted from them: waiting out the
         // whole suite's budget for two tests worth 50ms tells us nothing.
-        let timeout = self.runner.budget.for_selection(&selection);
+        let timeout = match retry {
+            true => self.runner.budget.for_retry(&selection),
+            false => self.runner.budget.for_selection(&selection),
+        };
 
         // Schemata are already in the copy, so the batch only has to name
         // itself. Anything they cannot host is written into the file instead,
@@ -301,6 +343,15 @@ impl<'a> Worker<'a> {
                     result: SuiteResult::TimedOut,
                     failed_tests: Vec::new(),
                 })
+            }
+            // pytest that could not judge anything, after earlier mutants ran
+            // in this process, may be judging what they left behind: a mutant
+            // that skips click's `pdb.Pdb.__init__ = old_pdb_init` leaks into
+            // the stdlib, which no purge reaches. Errors are rare and quick, so
+            // a fresh process settles every one.
+            Ok(run) if run.result.status() == Status::Error => {
+                *slot = None;
+                None
             }
             Ok(run) => Some(RunReport {
                 result: run.result,
@@ -498,6 +549,23 @@ mod tests {
             original: original.to_string(),
             replacement: replacement.to_string(),
         }
+    }
+
+    /// A red batch records its kills at once and hands its survivors back to
+    /// be confirmed alone, so no batch ever writes a `survived`.
+    #[test]
+    fn a_batch_keeps_its_kills_and_gives_up_its_survivors() {
+        let mut outcome = BatchOutcome::attributed(
+            vec![
+                (1, Status::Killed),
+                (2, Status::Survived),
+                (3, Status::Survived),
+            ],
+            vec!["t.py::test_a".to_string()],
+            Duration::ZERO,
+        );
+        assert_eq!(outcome.take_survivors(), [2, 3]);
+        assert_eq!(outcome.verdicts, [(1, Status::Killed)]);
     }
 
     #[test]

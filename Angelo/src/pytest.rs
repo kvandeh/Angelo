@@ -118,6 +118,13 @@ impl Budget {
         tests.mul_f64(self.factor) + STARTUP_FLOOR
     }
 
+    /// A second chance for a run that timed out, at twice the first budget. A
+    /// timeout counts as detected, so one slow moment on a loaded machine
+    /// would otherwise be scored as a kill nothing made.
+    pub fn for_retry(&self, selection: &Selection) -> Duration {
+        self.for_selection(selection) * 2
+    }
+
     /// The budget an unselected run gets, for the line printed before the run.
     pub fn whole_suite(&self) -> Duration {
         self.for_selection(&Selection::whole_suite(false))
@@ -667,6 +674,21 @@ mod tests {
         assert_eq!(budget.for_selection(&selection_of(0.0)), STARTUP_FLOOR);
         let none = Budget::new(Duration::from_secs(4), 0.0);
         assert_eq!(none.whole_suite(), STARTUP_FLOOR);
+    }
+
+    /// The retry doubles the floor too: a hang in start-up is what it most
+    /// often has to tell apart from a slow start.
+    #[test]
+    fn a_retry_gets_twice_the_whole_budget() {
+        let budget = Budget::new(Duration::from_secs_f64(4.2), 2.0);
+        assert_eq!(
+            budget.for_retry(&selection_of(0.05)),
+            Duration::from_secs_f64(10.2)
+        );
+        assert_eq!(
+            budget.for_retry(&Selection::whole_suite(true)),
+            budget.whole_suite() * 2
+        );
     }
 
     /// timeout_factor comes from a hand-edited file; mul_f64 panics on these.
