@@ -41,6 +41,7 @@ ROOT = os.path.abspath(os.getcwd())
 REPLY_PREFIX = "##angelo##"
 # Must match ACTIVE_VAR in schemata.rs.
 ACTIVE_VAR = "ANGELO_MUTANTS"
+PRISTINE_ENVIRON = dict(os.environ)
 
 
 class Outcome:
@@ -71,7 +72,19 @@ def purge_project_modules():
             del sys.modules[name]
 
 
+def restore_process_state():
+    """Undo what a mutant can leave behind outside the tree, the parts a fresh
+    process would get back for free. A mutant that skips a test helper's
+    `os.chdir(cwd)` otherwise sends every later run looking for its tests in
+    the wrong directory, which pytest reports as exit 4."""
+    os.chdir(ROOT)
+    os.environ.clear()
+    os.environ.update(PRISTINE_ENVIRON)
+    sys.stdin, sys.stdout, sys.stderr = sys.__stdin__, sys.__stdout__, sys.__stderr__
+
+
 def run(request, forked):
+    restore_process_state()
     # Schemata ask for no purge, because nothing needs re-importing to switch a
     # mutant on. That is only safe when a fork gave this run a process of its
     # own: without one, the purge is the only thing resetting anything between
