@@ -174,20 +174,15 @@ fn parse_reply(line: &str) -> Result<WarmRun> {
         })
         .with_context(|| format!("no exit_code in worker reply: {line}"))?;
 
-    let failed = field(line, "\"failed\": [")
-        .or_else(|| field(line, "\"failed\":["))
-        .map(|rest| {
-            rest.split(']')
-                .next()
-                .unwrap_or("")
-                .split(',')
-                .filter_map(|item| {
-                    let trimmed = item.trim().trim_matches('"');
-                    (!trimmed.is_empty()).then(|| trimmed.to_string())
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // A parametrised node id carries its own `]` and often a `,`, so the list
+    // is read string by string. Cutting at the first `]` lost every failure
+    // after one, and the batch members those failures belonged to were scored
+    // `survived`: 125 of 1000 flask mutants at batch 8.
+    let failed = match field(line, "\"failed\": [").or_else(|| field(line, "\"failed\":[")) {
+        Some(rest) => string_array(rest)
+            .with_context(|| format!("unreadable failed list in worker reply: {line}"))?,
+        None => Vec::new(),
+    };
 
     Ok(WarmRun {
         result: SuiteResult::Finished(exit_code),
@@ -198,6 +193,54 @@ fn parse_reply(line: &str) -> Result<WarmRun> {
 
 fn field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     line.find(key).map(|at| &line[at + key.len()..])
+}
+
+/// The JSON strings of an array whose opening `[` is already consumed, up to
+/// its closing `]`. None for anything malformed, which retires the worker
+/// rather than guessing at a verdict.
+fn string_array(rest: &str) -> Option<Vec<String>> {
+    let mut items = Vec::new();
+    let mut chars = rest.chars();
+    loop {
+        match chars.find(|c| !c.is_whitespace() && *c != ',')? {
+            ']' => return Some(items),
+            '"' => items.push(json_string(&mut chars)?),
+            _ => return None,
+        }
+    }
+}
+
+/// One JSON string body, after its opening quote. Python's `json.dumps`
+/// escapes every non-ASCII character as `\uXXXX`, and a character outside the
+/// BMP as a surrogate pair, so both have to come back as the character.
+fn json_string(chars: &mut std::str::Chars) -> Option<String> {
+    let mut text = String::new();
+    let mut units: Vec<u16> = Vec::new();
+    loop {
+        let c = chars.next()?;
+        if c == '\\' && chars.as_str().starts_with('u') {
+            chars.next();
+            let hex: String = chars.by_ref().take(4).collect();
+            units.push(u16::from_str_radix(&hex, 16).ok()?);
+            continue;
+        }
+        if !units.is_empty() {
+            text.push_str(&String::from_utf16(&units).ok()?);
+            units.clear();
+        }
+        match c {
+            '"' => return Some(text),
+            '\\' => text.push(match chars.next()? {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                'b' => '\u{8}',
+                'f' => '\u{c}',
+                other => other,
+            }),
+            other => text.push(other),
+        }
+    }
 }
 
 /// The worker replaces the pytest invocation, so only the interpreter carries
@@ -225,6 +268,41 @@ mod tests {
             parse_reply(r#"{"exit_code": 1, "failed": ["a.py::test_x", "b.py::test_y"]}"#).unwrap();
         assert_eq!(run.result.exit_code(), Some(1));
         assert_eq!(run.failed_tests, ["a.py::test_x", "b.py::test_y"]);
+    }
+
+    /// The flask case: a parametrised id ends in `]` and holds a `,`. Every
+    /// failure after it used to vanish, and its batch member survived.
+    #[test]
+    fn reads_every_failure_after_a_parametrised_one() {
+        let run = parse_reply(
+            r#"{"exit_code": 1, "failed": ["t.py::test_a[x-1, 2]", "t.py::test_b", "t.py::test_c[\"q\\]"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            run.failed_tests,
+            [
+                "t.py::test_a[x-1, 2]",
+                "t.py::test_b",
+                r#"t.py::test_c["q\]"#
+            ]
+        );
+    }
+
+    /// json.dumps writes non-ASCII as \u escapes, and emoji as a surrogate pair.
+    #[test]
+    fn reads_escaped_unicode_back_as_characters() {
+        let run = parse_reply(
+            r#"{"exit_code": 1, "failed": ["t.py::test_x[café]", "t.py::test_y[😀]"]}"#,
+        )
+        .unwrap();
+        assert_eq!(run.failed_tests, ["t.py::test_x[café]", "t.py::test_y[😀]"]);
+    }
+
+    /// A list that never closes is a broken reply, not an empty one: empty
+    /// would let a red batch score its members `survived`.
+    #[test]
+    fn rejects_a_failed_list_that_never_closes() {
+        assert!(parse_reply(r#"{"exit_code": 1, "failed": ["t.py::test_a""#).is_err());
     }
 
     #[test]
