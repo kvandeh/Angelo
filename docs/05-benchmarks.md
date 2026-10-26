@@ -279,6 +279,23 @@ The lesson is worth stating plainly: a mutation tester's characteristic failure 
 inventing test gaps that do not exist. The verdict matrix in continuous integration exists
 because of this bug.
 
+## Batching on Windows, measured again
+
+The same 1000 mutants per repository, eight workers, warm workers on. Each survivor gets a
+run of its own.
+
+| Repository | batch 1 | batch 8 |
+| --- | --- | --- |
+| flask | **189 s** | 292 s |
+| click | **210 s** | 263 s |
+| toolz | **104 s** | 127 s |
+| markupsafe | **32 s** | 44 s |
+
+**Batch 1 is faster on all four.** It was faster before the survivor check too: flask took
+167 s at batch 1 and 239 s at batch 8. The 4.6x gain in
+[batch mutating](01-batch-mutating.md) is from a small demo suite. Do not expect it on a
+real repository until this is solved.
+
 ## What these numbers do not prove
 
 - The synthetic project has **independent functions with disjoint tests**, which is the

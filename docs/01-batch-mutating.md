@@ -59,24 +59,24 @@ to run at all, which is [test selection](02-test-selection.md).
 ```mermaid
 flowchart TD
     A[run the batch] --> B{did anything fail?}
-    B -->|no| C[every member survived]
+    B -->|no| C[run each member alone]
     B -->|yes| D{can each failing test<br/>be charged to one member?}
-    D -->|yes| E[those members killed,<br/>the rest survived]
+    D -->|yes| E[those members killed,<br/>run each other member alone]
     D -->|no| F[split the batch in half,<br/>run both halves]
     F --> A
 ```
 
 Three cases, three rules:
 
-1. **Nothing failed.** No test objected to any of the faults, so every member survived.
-   One run, many verdicts. This is where the saving comes from.
-2. **Something failed, and every failure is explainable.** Each failing test is charged to
-   the single batch member that it covers. Members whose tests all passed survived.
-3. **Anything else.** A timeout, a crash, or a failure that no member explains. Angelo
-   refuses to guess. It splits the batch and runs both halves.
+1. **Something failed, and each failure has an owner.** Each failing test kills the one
+   member that it covers. This is where the saving comes from.
+2. **A timeout, a crash, or a failure without an owner.** Angelo does not guess. It splits
+   the batch and runs the halves.
+3. **A member has no failing test.** Angelo runs that member alone before it records
+   `survived`.
 
-Case three is the safety net. It means a verdict only ever comes from a run that proves
-it, and it is why an unexpected result costs speed rather than accuracy.
+**A batch can kill, but it cannot acquit.** A false survivor is a test gap that does not
+exist, so only a run of one mutant can record one.
 
 ## Result
 
@@ -89,6 +89,10 @@ Two hundred mutants, eight workers, two second suite.
 
 **4.6x faster, identical verdicts.** One hundred and sixty one runs collapsed into
 twenty one.
+
+!!! warning "Real repositories are slower at batch 8"
+    On flask, click, toolz and markupsafe under Windows, batch 1 is faster. See
+    [benchmarks](05-benchmarks.md#batching-on-windows-measured-again).
 
 ## Limits
 
@@ -107,15 +111,16 @@ twenty one.
   conflict does.
 
 !!! warning "A suite that is not order-independent"
-    A batch runs the **union** of its members' tests, so a mutant is judged alongside tests
-    that would not otherwise have run. On a suite that leaks state between tests, that
-    changes answers. On flask, batch 8 and batch 1 disagree about **32 of 1000** mutants —
-    `os.environ` reads in `cli.py` and `helpers.py`, logging configuration in `logging.py` —
-    and they disagree by the same amount with schemata off, so this is batching itself and
-    not the newer path. No grouping strategy fixes it; the fault is in the suite. The
+    A batch runs the **union** of its members' tests. On a suite that shares state between
+    tests, a test can pass in a batch and fail alone. That is why a survivor always gets a
+    run of its own. A kill from a batch is not checked again, because that would cost most
+    of the saving.
+
+    Measure the noise before you blame the batch. On flask, two identical batch 1 runs
+    disagree about **16 to 25 of 1000** mutants, with no change at all. Batch 8 and batch 1 disagree about
+    **26**. Most of those are kills from a batch that a run alone does not repeat. The
     [verdict matrix](https://github.com/kvandeh/angelo/blob/main/scripts/verdict-matrix.sh)
-    guarantees agreement on a suite that *is* order-independent, which is the most any tool
-    can promise here.
+    makes sure that all configurations agree on a suite that is order-independent.
 
 ## Related work
 

@@ -105,6 +105,9 @@ A budget that is too generous wastes time. A budget that is too tight **invents 
 because a timeout counts as detected. Those two mistakes are not equally bad, so both
 terms err long.
 
+**A timeout gets a second chance.** When a mutant times out alone, Angelo runs it again
+with two times the budget. Only a second timeout counts as detected.
+
 The honest limit: a mutant that makes the code slower without making it hang now crosses a
 tighter line than before, and a mutant like that would be scored as detected where it once
 survived. The

@@ -87,6 +87,10 @@ not retire a [forking](08-schemata.md#isolation) one: that parent never ran the 
 killed the child's process group and carried on, so restarting it would repay a warm-up
 that nothing has dirtied.
 
+**An `error` is checked again in a fresh process.** A mutant can change the standard
+library, and a purge cannot undo that change. Before each run, the worker also restores the
+working directory, the environment and the standard streams.
+
 **The process recycles.** After `warm_recycle_after` runs, default 50, it is replaced.
 This bounds anything that survives the module purge — and it does nothing on the fork path,
 where nothing accumulates to bound.
@@ -107,9 +111,9 @@ Warm workers pay most where runs are many and each is cheap, which is the mirror
 test selection. Together with batching, the full stack takes a 48.1 second job down to
 4.5 seconds.
 
-## Two bugs this cost
+## Four bugs this cost
 
-Both were silent, and both were caught by tests rather than by reading the code.
+All four were silent. Tests found the first two. Real repositories found the last two.
 
 **Purging `__main__` broke pytest.** The worker script itself is `__main__`, and it lives
 inside the project copy, so the module purge deleted it. Python's debugger imports
@@ -117,6 +121,21 @@ inside the project copy, so the module purge deleted it. Python's debugger impor
 
 **pytest's output collided with the protocol.** Both were writing to the same stdout, so
 the reader parsed "1 passed" as a reply. Replies now carry a marker prefix.
+
+**A parametrised test hid the failures after it.** The reader cut the list of failed tests
+at the first `]`. A name such as `test_x[a-1]` has one. In a batch, Angelo lost every later
+failure and recorded `survived` for its mutant.
+
+| Repository, 1000 mutants | False survivors at batch 8 |
+| --- | --- |
+| flask | 113 |
+| click | 106 |
+| markupsafe | 46 |
+
+**A leak became an `error`.** On click, 44 of 1000 verdicts were `error` with warm workers
+on, and not with warm workers off. One mutant in that sample removes the line that restores
+`pdb.Pdb.__init__`, and no purge undoes that change. Now a fresh process checks each
+`error`.
 
 ## Limits
 

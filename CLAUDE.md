@@ -365,7 +365,10 @@ wrapped in coverage.py (`dynamic_context = test_function`, rcfile and data file 
 `.angelo/`). Mutants classify as Tested (batchable when their covering sets are disjoint),
 ImportOnly (runs alone) or Untested (survives with no run at all, `execution_id NULL`). A
 red batch attributes directly: a failed test kills the one member it covers. Anything
-unattributable — a timeout, a crash, a failure no member explains — bisects. With no
+unattributable — a timeout, a crash, a failure no member explains — bisects. **A batch may
+kill but never acquit**: every member a batch would call `survived`, green batch or red,
+is judged again alone, because a false survivor is the one mistake this tool exists not to
+make. With no
 coverage installed, or a test command that is not `python -m pytest`, batches are size 1 and everything still
 works. First-fit composer in `batch.rs`, `batch_size` in config, default 8.
 
@@ -384,14 +387,19 @@ generated wrapper calls one copy, so the second would never take effect and woul
 verdict-matrix fixture's `fee` exists to catch it — two mutable tokens on branches no single
 test covers together.
 
-**Batching is not free on a suite with global state**, and that is a property of the suite
-rather than of angelo. On flask, batch 8 and batch 1 disagree about 32 of 1000 mutants with
-schemata *off*, on the plain splice path: `os.environ` reads in `cli.py` and `helpers.py`,
-logging configuration in `logging.py`. A batch runs the union of its members' tests, so a
-mutant is judged alongside tests that would not otherwise have run, and a suite that leaks
-state between tests answers differently. Nothing angelo can group its way out of. The
-verdict matrix guards the claim on a suite that *is* order-independent, which is the most
-that can be guaranteed.
+**Measure the noise floor before blaming a speed feature.** On flask two *identical* batch 1
+runs disagree about 16 to 18 (cold) or 25 (warm) of 1000 mutants, and batch 8 against batch 1 is
+26 — the 32 this file once blamed on batching was mostly that. A batch runs the union of its
+members' tests, so on a suite that leaks state it can still kill what a lone run would not;
+confirming kills too would cost most of the saving and was not done. The verdict matrix
+guards the claim on a suite that *is* order-independent.
+
+**The warm reply parser once invented 113 survivors.** It cut the `failed` list at the first
+`]`, and a parametrised node id carries one, so every failure after it vanished and its batch
+member scored `survived`: 141 disagreements at batch 8 on flask, against 36 with warm workers
+off. `-x` hid it at batch 1, where one failure is all there ever is. `string_array` in
+`warm.rs` reads the list string by string and fails loudly on anything malformed. **Compare a
+speed feature against itself switched off on a real suite**, not only on the fixture.
 
 Raising `batch_size` past 8 does nothing on a real project: flask's 1000-mutant pool
 composes into 409 batches at 8 and 407 at 32. The cap never binds — mutation conflict does.
@@ -428,7 +436,10 @@ parametrised cases add up. The 5 s floor is a constant and must stay one: it cov
 interpreter start, imports and collection, none of which appear in a junit time, and the
 cold subprocess that any warm failure falls back to. **A timeout counts as detected, so a
 budget that is too tight invents kills rather than merely running slowly.** The verdict
-matrix fixture carries a deliberately hanging mutant for exactly this reason.
+matrix fixture carries a deliberately hanging mutant for exactly this reason. So a lone
+mutant that times out runs once more at `Budget::for_retry`, twice the budget, and only a
+second timeout is believed. It is not enough under heavy load: a cold flask run sharing the
+machine with the verdict matrix still recorded about 100 false timeouts.
 
 A timeout is also the one outcome a batch does **not** bisect. Halving makes every half
 that still holds the hang wait out the whole budget again, so binary search pays for the
@@ -477,7 +488,12 @@ drops every module whose `__file__` sits under the copy root, so mutated source 
 re-imported while pytest stays loaded. Replies carry a `##angelo##` prefix because pytest
 writes its own progress to the same stdout. Any timeout, crash or unparseable reply retires
 the worker and the mutant falls back to a fresh subprocess — warm running may change the
-clock and nothing else. Recycles every `warm_recycle_after` runs, default 50. Only for
+clock and nothing else. **So does an `error` verdict**: a purging worker cannot undo what a
+mutant did to the stdlib — click's `pdb.Pdb.__init__ = old_pdb_init` deleted stays patched,
+the likeliest of the suspects — and on click warm workers alone turned 44 of 1000 verdicts
+into `error`. Errors are rare and quick, so a
+cold process settles each one. Before every run the driver also restores the working
+directory, `os.environ` and `sys.std*`, which a fresh process gets for free. Recycles every `warm_recycle_after` runs, default 50. Only for
 `python -m pytest ...` commands (`warm::hostable`). Measured 2.5x unbatched; the full stack
 takes 48.1 s to 4.5 s on a 2 s suite.
 
@@ -571,14 +587,12 @@ splice is not a smell in somebody's file.
 server-side `api/ce/task` warnings do not carry it, which is how it got missed once already
 and shipped as "no format warning" in a pull request that had to be corrected.
 
-Issues are not measures, so **no score ever reaches Sonar** — `api/custom_measures` was
-removed in 8.2 and a real metric needs the plugin path. The plugin buys history and a gate
-condition, and is deferred because it is a separate Java repository and third-party plugins do
-not run on SonarQube Cloud. Pitest `mutations.xml` is a **dead end**, not a shortcut: that
-plugin registers Java and Kotlin rules only. Docs in `docs/09-sonarqube.md`. The plugin path buys a real score metric with history and
-a gate, and is deferred because it is a separate Java repository and third-party plugins do
-not run on SonarQube Cloud. Pitest `mutations.xml` is a **dead end**, not a shortcut: that
-plugin registers Java and Kotlin rules only. Docs in `docs/09-sonarqube.md`.
+Issues are not measures, so **the issue import carries no score** — `api/custom_measures` was
+removed in 8.2. The score travels through the plugin in `integrations/sonarqube/`, which
+declares `angelo_mutation_score` and its counts as real metrics, so they get history and a
+gate condition. Third-party plugins do not run on SonarQube Cloud, so there the issues are all
+there is. Pitest `mutations.xml` is a **dead end**, not a shortcut: that plugin registers Java
+and Kotlin rules only. Docs in `docs/09-sonarqube.md`.
 
 **Output.** The survivor list prints **above** the report, so the score is the last line
 on screen rather than five hundred survivors up. Verdicts carry colour through `Paint` in
