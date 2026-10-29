@@ -6,7 +6,9 @@ name: Release
 # workflow would sit silent while looking wired up.
 on:
   push:
-    branches: [main]
+    # develop publishes to TestPyPI as `angelo`; main releases and publishes to
+    # real PyPI as `angelo-mut`, since `angelo` there is somebody else's.
+    branches: [main, develop]
   # Lets a publish be retried without a version bump, which is what a first run
   # against a misconfigured trusted publisher needs. TestPyPI still refuses a
   # version it already holds, so the retry either works or fails loudly.
@@ -23,6 +25,7 @@ jobs:
       tag: ${{ steps.read.outputs.tag }}
       release: ${{ steps.read.outputs.release }}
       wheels: ${{ steps.read.outputs.wheels }}
+      index: ${{ steps.read.outputs.index }}
     steps:
       - uses: actions/checkout@v7
 
@@ -34,18 +37,29 @@ jobs:
           tag="v$version"
           echo "Cargo.toml says $version"
 
-          # Every push to main would otherwise re-release the same version.
-          # Bumping Cargo.toml is what cuts a release; anything else is a no-op.
-          if git ls-remote --tags origin | grep -q "refs/tags/$tag$"; then
-            release=false
-            echo "$tag already exists, so no GitHub release"
+          if [ "$GITHUB_REF_NAME" = main ]; then
+            index=pypi
+            # Every push to main would otherwise re-release the same version.
+            # Bumping Cargo.toml is what cuts a release; anything else is a no-op.
+            if git ls-remote --tags origin | grep -q "refs/tags/$tag$"; then
+              release=false
+              echo "$tag already exists, so no GitHub release"
+            else
+              release=true
+            fi
           else
-            release=true
+            index=testpypi
+            # develop never cuts a release. It publishes once per version: a
+            # version TestPyPI already holds means this push is not a bump.
+            release=false
+            status=$(curl -s -o /dev/null -w '%{http_code}' "https://test.pypi.org/pypi/angelo/$version/json")
+            [ "$status" = 404 ] && fresh=true || fresh=false
+            echo "TestPyPI answered $status for $version"
           fi
 
           # A manual run is someone asking to publish, so the wheels get built
           # even when the tag is already cut.
-          if [ "$release" = true ] || [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+          if [ "$release" = true ] || [ "${fresh:-false}" = true ] || [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
             wheels=true
           else
             wheels=false
@@ -56,6 +70,7 @@ jobs:
             echo "tag=$tag"
             echo "release=$release"
             echo "wheels=$wheels"
+            echo "index=$index"
           } >> "$GITHUB_OUTPUT"
 
   wheels:
@@ -70,6 +85,13 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
+
+      # Real PyPI's `angelo` belongs to a 2021 turtle-graphics toy, so main
+      # ships as `angelo-mut`. The command and the import stay `angelo`.
+      - name: Rename the distribution for PyPI
+        if: needs.version.outputs.index == 'pypi'
+        shell: bash
+        run: sed -i.bak 's/^name = "angelo"$/name = "angelo-mut"/' integrations/pypi/pyproject.toml && grep -q '^name = "angelo-mut"$' integrations/pypi/pyproject.toml
 
       - uses: PyO3/maturin-action@v1
         with:
@@ -145,7 +167,7 @@ jobs:
   # blocks shipping a binary that already built.
   testpypi:
     needs: [version, wheels]
-    if: needs.version.outputs.wheels == 'true'
+    if: needs.version.outputs.wheels == 'true' && needs.version.outputs.index == 'testpypi'
     runs-on: ubuntu-latest
     # A dedicated environment, so publishing rights are not handed out with
     # commit access.
@@ -166,3 +188,21 @@ jobs:
           # No skip-existing. TestPyPI refuses a version it already holds, and
           # that refusal is the useful answer: publishing again means bumping
           # Cargo.toml, not uploading nothing and reporting success.
+
+  # The same trusted publishing against real PyPI, for main only. The publisher
+  # on PyPI is registered for project angelo-mut, this file and environment pypi.
+  pypi:
+    needs: [version, wheels]
+    if: needs.version.outputs.wheels == 'true' && needs.version.outputs.index == 'pypi'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: wheel-*
+          merge-multiple: true
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@v1.14.1
