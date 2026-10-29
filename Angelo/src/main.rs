@@ -37,7 +37,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Detect the project layout and write angelo.conf
-    Init,
+    Init {
+        /// Overwrite an existing angelo.conf instead of refusing
+        #[arg(long)]
+        force: bool,
+    },
     /// Enumerate mutants into .angelo/angelo.db, then run them
     Exec {
         /// Parallel pytest workers (default: one per CPU core)
@@ -82,8 +86,8 @@ fn main() -> Result<ExitCode> {
     logging::init(cli.verbosity, &bars)?;
 
     match cli.command {
-        Command::Init => {
-            config::init()?;
+        Command::Init { force } => {
+            config::init(force)?;
             Ok(ExitCode::SUCCESS)
         }
         Command::Exec {

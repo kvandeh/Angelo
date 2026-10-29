@@ -13,6 +13,7 @@ same thing.
 
 * Never open a pull request yourself; push the branch and stop; see [Do not open the pull request](#do-not-open-the-pull-request).
 * Speed features must never change a verdict; see [The rule everything obeys](#the-rule-everything-obeys).
+* Operators are chosen from the evidence, and where beats which; see [Settled decisions](#settled-decisions).
 * Write plain Rust: structs and impls, enums and match, derive, `?`; see [Write idiomatic Rust, not clever Rust](#write-idiomatic-rust-not-clever-rust).
 * No `unwrap()` in a logic path, `anyhow::Context` on every fallible boundary; see [Handle the weird case](#handle-the-weird-case).
 * If a function takes an `X` and branches on it, it belongs on `X`; see [Put behaviour on the type that owns the data](#put-behaviour-on-the-type-that-owns-the-data).
@@ -305,18 +306,58 @@ Enumeration and sampling each run inside a `Batched`, which is `BEGIN`/`COMMIT` 
 `Drop` that rolls back. One commit per row cost **30 s** on flask — 2541 inserts and then
 1541 deletes to make a 1000-mutant sample — which was a quarter of the whole run.
 
-**Mutants.** Token-level byte splices via `ruff_python_parser`: `parse_module(source)?
-.tokens()`, token kinds from `ruff_python_ast::token`. Splices that break the syntax are
-accepted noise — they exit as `error` and sit outside the score.
+**Mutants.** Byte splices via `ruff_python_parser`: `parse_module(source)?`, then
+**both halves of what it returns**. `.tokens()` gives the operator swaps, token kinds from
+`ruff_python_ast::token`. `.syntax()` gives what a token stream cannot see — where a
+statement ends, where a condition starts, which call is a logging call — and `Nodes` walks
+it for deletion, condition replacement and the arid ranges. Everything still comes out as
+one `(start, end, replacement)`, so nothing downstream knows the difference; the two are
+merged and sorted into byte order before `Lines` numbers them, which keeps the one-scan
+property. Splices that break the syntax are accepted noise — they exit as `error` and sit
+outside the score.
 
-**Operators.** Measured at **63 Angelo against 61 mutmut** on one file, up from about 60%.
-36 one-to-one token swaps in the `operators!` macro, plus numbers (`n+1`, any base),
-strings (XX-wrapping and case flips, docstrings skipped), unary `not` and `~` removal, and
-string-method mirrors, which only apply after a `Dot`. A `for` loop's `in` is skipped
-because `for x not in y` is always a syntax error. `mutate::replacements` returns a `Vec`:
-one token can yield several mutants. Not implemented, because they need AST rewriting
-rather than splices: argument removal or None-ing, dict kwarg renames, lambda bodies,
-`a = None`, match-case dropping.
+**Operators.** Chosen from the empirical literature rather than from what a token stream
+makes easy, and the reasoning lives in `docs/06-operators-and-sampling.md`. Three families
+are supported by every yardstick applied to them and are on: **statement deletion**
+(`BlockStatement`), **relational replacement** (`EqualityOperator`), and **conditional and
+logical replacement** (`ConditionalExpression`, `LogicalOperator`). Three are supported by
+none and are **off by default**: `UnaryOperator`, which of the five operators Google
+measures over 16.9M mutants has both the lowest survival rate (9.6%) and the lowest
+developer-judged productivity (74.5%); and `NumberLiteral`/`StringLiteral`, which a
+regression search over 108 operators declined to select and which cannot reproduce a real
+literal fault anyway. Absolute value insertion is not implemented and must not be: it is
+the clearest case of a canonical operator later evidence overturned.
+
+The table lives in the `operators!` macro, one token to a **list** of replacements. An
+ordering operator takes two — the boundary shift and the negation, `<` to `<=` and `>=` —
+because three of ROR's seven mutants subsume the other four and one replacement was under
+that mark rather than over it: only the negation was planted, and nothing landed on the
+boundary. Equality has no boundary neighbour and keeps one. Deletion writes `pass` over a
+statement, never empty, so a block that loses its only statement is still a block, and it
+skips imports, definitions, docstrings and a bare `return` — those are killed for free or
+equivalent by construction. Condition replacement gives `if`/`elif` both constants and a
+`while` **only `False`**, because a timeout counts as detected and `while True` would spend
+the whole budget saying what `False` says at once.
+
+`FAMILIES` is the one list `mutator`, the `operators` config key and their tests all read,
+the same shape as `STATUSES`. An unknown family name **bails**: accepted silently it would
+drop a family from the pool and report a higher score for the loss. Still not implemented,
+because they need code generation rather than splices: argument removal or None-ing, dict
+kwarg renames, lambda bodies, `a = None`, match-case dropping.
+
+**Where beats which.** Operator selection's measured ceiling over uniform random sampling
+is a mean of **13.078%**. Suppressing unproductive call sites took Google's median from
+**820 mutants per change to 7** and productivity from 15% to 89%. So `arid` names calls
+that exist for a person to read — `log`, `logger`, `logging`, `print`, `warn`, `warnings`
+— and turns away the whole statement, plus `__repr__` and `__str__` bodies. The list is
+short on purpose: `debug` is absent because plenty of projects have a `debug` flag, and an
+arid list that turns away real code raises the score silently. `per_line_cap` bounds one
+line's contribution, off by default, drawn at random for the same reason `--sample` is —
+enumeration order is the operator table's order, so keeping the head of each line would
+study arithmetic forever. Both counts print, for the same reason `exclude` prints its own:
+a silent suppression raises the score. Neither warns about a pattern that matched nothing,
+where `exclude` does, because the default `arid` list is expected not to match most
+projects.
 
 **Batching.** A conflict is **the same test case covering both mutants**. The measurement
 is over tests, not over source structure. Per-test coverage comes from the baseline run
@@ -328,7 +369,16 @@ unattributable — a timeout, a crash, a failure no member explains — bisects.
 coverage installed, or a test command that is not `python -m pytest`, batches are size 1 and everything still
 works. First-fit composer in `batch.rs`, `batch_size` in config, default 8.
 
-On the schemata path a batch has a **second** conflict: two mutants of one function. The
+A batch has a **second** conflict everywhere, and a third on the schemata path. The
+second is **overlapping bytes**. Two token mutants never overlap because two tokens never
+do, but deletion and condition replacement rewrite whole nodes, so a batch can be offered
+the deletion of `return a + b` and the swap of its `+`. `splice_all` applies a batch back
+to front, so the outer edit would land on offsets the inner one had already moved: a
+corrupt file at best, and at worst a `replace_range` panic on a byte that is no longer a
+character boundary. `Batch::overlaps` reads the members it already holds rather than
+carrying a second copy of their ranges, and costs a batch slot and nothing else.
+
+The third is two mutants of one function. The
 generated wrapper calls one copy, so the second would never take effect and would be scored
 `survived`. `Schemata::host` names the function and `Batch` refuses a repeat, and the
 verdict-matrix fixture's `fee` exists to catch it — two mutable tokens on branches no single

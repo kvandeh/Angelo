@@ -66,7 +66,8 @@ def fee(kind, amount):
     return amount * 2
 
 
-# `not` is the only mutable token here, and removing it spins forever.
+# Removing the `not` spins forever, which is why `operators` above asks for
+# UnaryOperator: without it nothing in this fixture hangs.
 def spin(flag):
     while not flag:
         pass
@@ -120,6 +121,18 @@ warm_workers = $warm
 warm_recycle_after = 10
 schemata = $schemata
 timeout_factor = 4.0
+operators = [
+    "ArithmeticOperator", "AssignmentOperator", "BitwiseOperator",
+    "BlockStatement", "BooleanLiteral", "ConditionalExpression",
+    "EqualityOperator", "LogicalOperator", "MethodExpression",
+    "StatementSwap",
+    # Removing a not is unary operator insertion, which the default set
+    # leaves out on the evidence. The spin function below hangs only when that
+    # mutant is planted, and the hanging mutant is what makes this matrix worth
+    # running, so the fixture asks for the family by name. No backticks here:
+    # this heredoc is unquoted, so the shell would run whatever they wrapped.
+    "UnaryOperator",
+]
 EOF
     # `untestable` is exactly as wide as the summary's column, so it starts at
     # column zero where every other status is indented. Missing it would let a

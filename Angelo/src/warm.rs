@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use crate::pytest::{Selection, SuiteResult};
+use crate::pytest::{self, Selection, SuiteResult};
 
 const DRIVER: &str = include_str!("runner/worker.py");
 const DRIVER_FILE: &str = "angelo-worker.py";
@@ -46,7 +46,7 @@ impl WarmWorker {
         fs::write(&driver, DRIVER).with_context(|| format!("writing {}", driver.display()))?;
 
         let python = python_of(test_command)?;
-        let mut child = Command::new(python)
+        let mut child = Command::new(pytest::resolve_on_path(python))
             .arg(DRIVER_FILE)
             .current_dir(cwd)
             .env("PYTHONDONTWRITEBYTECODE", "1")

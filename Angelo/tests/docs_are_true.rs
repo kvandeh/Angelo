@@ -112,7 +112,10 @@ const OTHER_TOOLS: &[&str] = &[
 
 #[test]
 fn every_documented_flag_exists() {
+    // Every subcommand that takes a flag has to be asked, or documenting one
+    // fails the guard that exists to protect it.
     let exec_help = help(&["exec"]);
+    let init_help = help(&["init"]);
     let root_help = help(&[]);
     let text = prose();
 
@@ -125,7 +128,10 @@ fn every_documented_flag_exists() {
     let missing: Vec<String> = documented_flags(&ours)
         .into_iter()
         .filter(|flag| {
-            !exec_help.contains(&format!("--{flag}")) && !root_help.contains(&format!("--{flag}"))
+            let spelled = format!("--{flag}");
+            ![&exec_help, &init_help, &root_help]
+                .iter()
+                .any(|help| help.contains(&spelled))
         })
         .collect();
     assert!(

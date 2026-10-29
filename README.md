@@ -197,7 +197,7 @@ Each page is written as a short paper: abstract, background, method, result, lim
 | [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | The `fork()` substitute, and why subinterpreters are not one |
 | [Architecture](https://angelo.kcvdh.com/04-architecture/) | Module map and design rules |
 | [Benchmarks](https://angelo.kcvdh.com/05-benchmarks/) | Every measurement, including the disappointing ones |
-| [Operators and sampling](https://angelo.kcvdh.com/06-operators-and-sampling/) | What gets mutated, and how to cap the pool |
+| [Operators and sampling](https://angelo.kcvdh.com/06-operators-and-sampling/) | Which operators the evidence supports, where not to apply them, and how to cap the pool |
 
 ## Status
 

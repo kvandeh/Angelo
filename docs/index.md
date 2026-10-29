@@ -74,7 +74,11 @@ Four techniques, each measured, each documented in its own note.
 | [Batch mutating](01-batch-mutating.md) | Test several mutants in one run | 4.6x |
 | [Test selection](02-test-selection.md) | Run only the tests that touch the mutant | 2.8x |
 | [Warm workers](03-warm-workers.md) | Keep one pytest process alive | 2.5x |
-| [Diff mode](06-operators-and-sampling.md) | Only mutate lines you changed | varies |
+| [A smaller pool](06-operators-and-sampling.md) | Plant only what the evidence supports, and only where it pays | varies |
+
+A fifth is not a technique so much as a scope: `--diff` and `--diff-base` mutate only the
+lines a change touched. [Run it locally](quick-start.md#make-it-faster-or-smaller) has
+both.
 
 !!! warning "Those figures are an upper bound"
     They come from a synthetic project with independent functions and no timeouts, which

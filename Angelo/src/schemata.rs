@@ -562,7 +562,9 @@ mod tests {
     /// whose original token matches, so the tests read as behaviour rather than
     /// as byte offsets.
     fn mutant_for(source: &str, original: &str, replacement: &str, id: i64) -> Mutant {
-        let mut found = mutate::enumerate_source(source, Path::new("m.py")).unwrap();
+        let mut found = mutate::Operators::everything()
+            .enumerate_source(source, Path::new("m.py"))
+            .unwrap();
         let at = found
             .iter()
             .position(|m| m.original == original && m.replacement == replacement)
@@ -742,7 +744,9 @@ mod tests {
              \x20           return y + 1\n\
              \x20       return inner\n";
 
-        let all = mutate::enumerate_source(source, Path::new("m.py")).unwrap();
+        let all = mutate::Operators::everything()
+            .enumerate_source(source, Path::new("m.py"))
+            .unwrap();
         let numbered: Vec<Mutant> = all
             .into_iter()
             .enumerate()

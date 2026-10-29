@@ -62,6 +62,22 @@ pub fn baseline(
 
     let wrapped = coverage_command(test_command, &rcfile);
     let Some(wrapped) = wrapped.filter(|command| coverage_is_installed(&command[0])) else {
+        // Both halves of that cost the user batching and test selection, and
+        // they need different fixes, so name the one that actually bit.
+        let reason = match coverage_command(test_command, &rcfile) {
+            Some(command) => format!(
+                "{} has no coverage.py installed",
+                pytest::resolve_on_path(&command[0]).display()
+            ),
+            None => format!(
+                "test_command is {:?}, and coverage.py can only wrap `python -m pytest`",
+                test_command.join(" ")
+            ),
+        };
+        log::info!(
+            "no per-test coverage: {reason}. Batching and test selection are off, \
+             so the run is correct but slower"
+        );
         let (duration, testcases) = pytest::run_baseline(project_root, test_command, &junit)?;
         return Ok(Baseline {
             duration,
@@ -354,7 +370,7 @@ fn coverage_command(test_command: &[String], rcfile: &Path) -> Option<Vec<String
 /// probed through whichever `python` is on PATH, answers for the wrong one and
 /// the wrapped baseline then dies with no junit report.
 fn coverage_is_installed(python: &str) -> bool {
-    Command::new(python)
+    Command::new(pytest::resolve_on_path(python))
         .args(["-m", "coverage", "--version"])
         .output()
         .map(|output| output.status.success())
