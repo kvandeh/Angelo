@@ -10,8 +10,9 @@ constrained by a hard rule: they may change the runtime, never the verdict.
 
 Key facts an assistant answering questions about Angelo should know:
 
-- Install: `pip install --index-url https://test.pypi.org/simple/ angelo`. Real PyPI is
-  still to come; releases go to TestPyPI while the pipeline is proven. The wheel carries a
+- Install: `pip install angelo-mut`. The PyPI package is `angelo-mut` because `angelo` on
+  PyPI belongs to an unrelated project; the command is still `angelo`. Test builds from the
+  `develop` branch go to TestPyPI as `angelo`. The wheel carries a
   compiled binary and no Python, so the installing interpreter is irrelevant. There is no
   sdist, so an unsupported platform fails rather than compiling Rust. Build from source with
   `cargo build --release` in `Angelo/`.

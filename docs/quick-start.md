@@ -1,72 +1,72 @@
 # Run it locally
 
-This page takes you from nothing to a mutation score on a project you have open right now,
-then explains how to read it. Putting that score into CI, onto a pull request or onto a
-SonarQube dashboard is [Integrations](integrations.md).
+This page tells you how to get a mutation score for a project on your computer. It also
+tells you how to read the score. To use the score in CI, on a pull request or in
+SonarQube, see [Integrations](integrations.md).
 
 ## Install it
 
-Angelo ships as a wheel, so `pip` is the way in. Real PyPI is still to come; releases go to
-**TestPyPI** while the publishing pipeline is being proven.
-
 ```bash
-pip install --index-url https://test.pypi.org/simple/ angelo
+pip install angelo-mut
 ```
 
-The wheel holds a compiled binary and no Python at all. `pip` puts `angelo` on your PATH,
-nothing imports it, and it does not care which interpreter installed it — so a global
-install works on every project on the machine.
+The package name is `angelo-mut`. The command is `angelo`. A different project already
+uses the name `angelo` on PyPI.
+
+The wheel contains a compiled binary and no Python code. Thus any Python interpreter can
+install it. One global installation works for all projects on the computer.
 
 | Platform | Wheel |
 | --- | --- |
 | Windows x86-64 | yes |
 | Linux x86-64 | yes, manylinux |
 | macOS Apple Silicon | yes |
-| Anything else | build from source |
+| Other platforms | build from source |
 
-Building from source needs a Rust toolchain and nothing else:
+To build from source, you need a Rust toolchain:
 
 ```bash
 git clone https://github.com/kvandeh/angelo.git
 cd angelo
-cargo build --release   # Angelo/target/release/angelo
+cargo build --release --manifest-path Angelo/Cargo.toml   # writes Angelo/target/release/angelo
 ```
 
-!!! warning "TestPyPI is a sandbox, not a mirror"
-    That flag points pip at TestPyPI **instead of** PyPI, so anything else in the same
-    command fails to resolve. Install Angelo on its own, or keep PyPI in the search:
+!!! note "Test builds on TestPyPI"
+    Each new version on the `develop` branch goes to TestPyPI as `angelo` before it goes to
+    PyPI. Use it only to test a version that is not released:
 
     ```bash
     pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ angelo
     ```
 
-## Before you begin
+## Before you start
 
-Angelo drives your existing suite, so it needs three things:
+Angelo runs your existing test suite. It needs three things:
 
-1. **python and pytest on your PATH.**
-2. **A suite that runs.** A handful of already-failing tests is fine: Angelo warns, refuses
-   to score the mutants those tests cover, and measures the rest. See
-   [a red baseline](#a-red-baseline-warns-rather-than-stops). What it cannot work with is a
-   suite pytest never judged at all, such as a missing plugin, and it says which it saw.
-3. **`pip install coverage`.** Optional but strongly recommended. Coverage is what
-   unlocks batching and test selection, which are most of the speed. Without it Angelo
-   still works, one mutant per run.
+1. **Python and pytest on your PATH.**
+2. **A suite that runs.** Some failing tests are permitted. Angelo gives a warning and does
+   not score the mutants that those tests cover. See
+   [A red baseline](#a-red-baseline-gives-a-warning). If pytest cannot run your suite at
+   all, for example because a plugin is missing, Angelo stops and tells you the cause.
+3. **`pip install coverage`.** This is optional, but recommended. Batching and test
+   selection need coverage, and they give most of the speed. Without coverage, Angelo runs
+   one mutant at a time.
 
 ## Run it
 
 ```bash
 cd your-project
-angelo init      # detects your layout, writes angelo.conf
-angelo exec      # enumerates mutants, then runs them
+angelo init      # finds your layout and writes angelo.conf
+angelo exec      # makes the mutants and runs them
 ```
 
-`init` writes a config you can edit. `exec` does the work and is resumable: interrupt it,
-run it again, and it picks up the pending mutants. To start over, delete `.angelo/`.
+`init` writes a configuration file that you can edit. `exec` does the work. If you stop
+`exec`, run it again. It continues with the mutants that did not run. To start again from
+the beginning, delete the `.angelo/` directory.
 
-`init` refuses to overwrite an `angelo.conf` that already exists, so re-running it cannot
-lose your edits. Pass `--force` to regenerate one from scratch — useful in a script, where
-a config left over from a previous run is otherwise picked up silently.
+`init` does not overwrite an `angelo.conf` that exists. Thus your changes are safe. To
+write a new file, use `angelo init --force`. Use `--force` in scripts, because a script
+can otherwise use an old configuration file without a warning.
 
 ## Read the report
 
@@ -87,52 +87,39 @@ survivors (changes your tests never noticed):
      score: 62.2% (46/74 detected)
 ```
 
-Five things worth noticing.
+| What you see | What it means |
+| --- | --- |
+| The survivor list | Each line is a change that no test detected. `calculator.py:31 >= -> >` means that no test checks the boundary on line 31. |
+| The report is last | A real project can have hundreds of survivors. The score is the last line, so it stays on your screen. |
+| 9 mutants did not run | No test executes those lines. No test can kill them, so Angelo sets them to `survived` immediately. |
+| 74 mutants, 17 runs | This is batching. Some mutants share one run. |
+| A score of 62% | This is normal. Real projects usually have a score between 50% and 80%. A score of 100% usually means that there are too few mutants. |
 
-**The survivors list is the point.** Each line is a change you can make to your code
-without any test objecting. `calculator.py:31 >= -> >` says the boundary at that
-comparison is untested.
+To make a build fail on a low score, see [Integrations](integrations.md).
 
-**The report comes last on purpose.** A real codebase produces hundreds of survivors, and
-the score is the number you ran the command for. Printed above the list it would scroll off
-the top; printed below it, it is the last line on screen.
-
-**Nine mutants never ran.** No test executes those lines, so no test could possibly kill
-them. Angelo marks them survived immediately rather than wasting a run.
-
-**Seventy four mutants became seventeen runs.** That is batching.
-
-**A score of 62 percent is normal.** Real projects commonly land between 50 and 80. A
-score of 100 usually means too few mutants, not perfect tests.
-
-A score can also **fail a build** rather than just print. That is
-[Integrations](integrations.md).
-
-Verdicts are **coloured on a terminal**: detected green, survived yellow, error red,
-untestable dim. Redirect the output, or set `NO_COLOR` to anything at all, and it comes
-back byte for byte plain, because a log full of escape codes helps nobody and `grep` least
-of all.
+On a terminal, the verdicts have colours: detected is green, survived is yellow, error is
+red, untestable is dim. When you redirect the output, or set `NO_COLOR` to any value, the
+output has no colour codes. Thus `grep` and log files get plain text.
 
 ## Statuses
 
 | Status | Meaning |
 | --- | --- |
-| `killed` | A test failed. The suite caught it. |
-| `survived` | Everything passed. The suite missed it. |
-| `timeout` | The mutant hung, for example an infinite loop. Counts as caught, because the behaviour observably changed. |
-| `error` | The mutant broke the syntax or an import. Excluded from the score, because it never got a fair trial. |
-| `untestable` | The only tests covering it were already failing. Excluded from the score, for the same reason. |
+| `killed` | A test failed. The suite detected the mutant. |
+| `survived` | All tests passed. The suite did not detect the mutant. |
+| `timeout` | The mutant did not stop, for example because of an infinite loop. This counts as detected, because the behaviour changed. |
+| `error` | The mutant broke the syntax or an import. It is not in the score, because the tests could not judge it. |
+| `untestable` | Only tests that already failed cover this mutant. It is not in the score, for the same reason. |
 
-!!! warning "Check the error count first"
-    A run where every mutant errors instantly looks fast and scores nothing useful. It
-    almost always means a broken test command rather than a broken codebase. Read the
-    `error` count before you trust any score.
+!!! warning "Look at the error count first"
+    If all mutants have the status `error` and the run is very fast, your test command is
+    usually wrong. Your code is usually not the problem. Look at the `error` count before
+    you trust a score.
 
-## A red baseline warns rather than stops
+## A red baseline gives a warning
 
-Real suites carry a few known-red tests: something flaky, something xfailing on this
-platform, one module halfway through a rewrite. Blocking mutation testing of an entire
-codebase over three of them is not useful, so Angelo does not.
+The **baseline** is one run of your suite before Angelo makes any change. Many real suites
+have some failing tests. Angelo does not stop for them.
 
 ```
 baseline RED in 3.4s, timeout 11.8s for a whole-suite run, from its own tests for a selected one
@@ -140,114 +127,100 @@ warning: 3 tests were already failing before any mutant was planted
 warning: 374 mutants set untestable, the tests covering them are already red
 ```
 
-The part worth keeping is the **reason** the rule existed. A test that was already failing
-fails again under a mutant, pytest exits 1, and exit 1 means `killed`. Every mutant those
-tests touch would be scored as detected without anything detecting anything. That is
-exactly this tool's characteristic failure — inventing a test gap that does not exist —
-running in the flattering direction.
+A failing test is dangerous for the score. A test that fails before the mutation also
+fails after it. pytest then exits with code 1, and exit code 1 means `killed`. Angelo would
+count mutants as detected when no test detected them.
 
-So Angelo refuses to score them instead. A mutant is judgeable only when its run can name
-its own tests and **avoid every already-failing one**. The rest come back `untestable` and
-sit outside the score, next to `error`.
+Thus Angelo scores a mutant only when two conditions are true:
+
+- Angelo can select the tests that cover the mutant.
+- None of those tests failed in the baseline.
+
+All other mutants get the status `untestable`. They are not in the score.
 
 !!! warning "This needs coverage and test selection"
-    Naming a mutant's tests is exactly what [test selection](02-test-selection.md) does.
-    Without `coverage` installed, or with `test_selection = false`, every run executes the
-    whole red suite and comes back exit 1, so there is no way to tell a contaminated mutant
-    from a clean one. Angelo stops there and says so, because a confident 100 percent is
-    worse than no answer.
+    [Test selection](02-test-selection.md) finds the tests for each mutant. Without
+    `coverage`, or with `test_selection = false`, each run executes the full red suite.
+    Each run then exits with code 1, and Angelo cannot find the correct verdict. In this
+    case, Angelo stops and tells you why. No score is better than a false score of 100%.
 
-## Every phase draws a bar
+## Progress bars
 
-A run has four waits, and each one shows something moving.
+Each phase of a run shows progress.
 
-| Phase | Shape |
+| Phase | Display |
 | --- | --- |
-| Parsing every source file | A bar, the file count is known |
-| The baseline suite under coverage | A spinner with the clock running |
-| Composing batches | A bar |
-| Running the mutants | A bar |
+| Parse the source files | A bar. The number of files is known. |
+| Run the baseline with coverage | A spinner and a clock. The duration is not known. |
+| Make the batches | A bar |
+| Run the mutants | A bar |
 
 ```
   mutants   [#####################---------------]  60%  1954/3210  detected 1502  survived 452  ~4m18s left
 ```
 
-The baseline spins rather than filling because **nobody can know how long a test suite
-takes** — that is the question it is asking. It is the longest single wait in a run, and it
-used to show nothing at all.
+The remaining time is an estimate, so it starts with `~`. Batching completes mutants in
+groups, and a failed batch can need more runs.
 
-The remaining time is a linear extrapolation and nothing better: batching settles mutants
-in clumps, and a batch that goes red costs several more runs while it bisects. Hence the `~`.
+The bar updates a maximum of five times each second. Thus its cost depends on the duration
+of the run, not on the number of mutants. When the output is not a terminal, Angelo does
+not show the bar.
 
-**A bar costs nothing per mutant.** It repaints at most five times a second, so the cost
-scales with how long the run takes and not with how many mutants it has. That is the fix: a
-line per mutant got more expensive exactly when a run could least afford it.
+## Show fewer log lines
 
-Off a terminal the bar disappears by itself, so a redirected or piped run emits no control
-characters at all.
-
-## Turn the commentary down
-
-**The report is output; everything else is commentary.** The report goes to stdout and
-prints at every verbosity — a script can rely on it. The timestamped lines and the bar go to
-stderr.
+The report goes to stdout. Angelo always prints it. The log lines and the bar go to stderr.
 
 ```bash
 angelo exec --verbosity warn
 ```
 
-| Level | Carries |
+| Level | Shows |
 | --- | --- |
-| `error` | Only what stopped a worker |
+| `error` | Only the errors that stopped a worker |
 | `warn` | A red baseline, untestable mutants, a sample, a pattern that matched nothing |
-| `info` | Phase transitions, and every mutant Angelo drops |
-| `debug` | A line per mutant, the way older versions always printed |
-| `trace` | The pytest command line and the node ids each run selected |
+| `info` | Each phase, and each group of mutants that Angelo removes |
+| `debug` | One line for each mutant |
+| `trace` | The pytest command line, and the tests that each run selected |
 
-The default is **`info`**, or **`warn` when the `CI` environment variable is set**, since in
-CI nobody is watching it scroll past. GitHub Actions sets `CI` on its Windows and macOS
-runners too, so this is the signal rather than the operating system. `CI=false` and `CI=0`
-turn it back off.
+The default level is **`info`**. When the `CI` environment variable is set, the default is
+**`warn`**. GitHub Actions sets `CI` on all its runners. `CI=false` and `CI=0` do not count.
 
-`RUST_LOG` is honoured for anyone who wants per-module control. Precedence, highest first:
-`--verbosity`, then `RUST_LOG`, then `CI`, then `info`.
+You can also use `RUST_LOG`. The order of priority, from highest to lowest, is:
+`--verbosity`, `RUST_LOG`, `CI`, then `info`.
 
 ## Keep the result
 
 ```bash
-angelo exec --html-report angelo.html   # one self-contained file, opens with no network
+angelo exec --html-report angelo.html   # one self-contained file, it needs no network
 angelo exec --report angelo.json        # the mutation-testing-report schema, version 2
 ```
 
-There is a third, `--sonar-report`, for SonarQube. All three are formats that already exist
-rather than shapes Angelo invented, so other tools read an Angelo run directly: see
-[reports](07-reports.md) for what each one holds, and [Integrations](integrations.md) for
-feeding them to something.
+A third flag, `--sonar-report`, writes a file for SonarQube. All three formats are
+standard formats, so other tools can read them. See [Reports](07-reports.md) for the
+contents, and [Integrations](integrations.md) for how to use them.
 
-## Make it faster or smaller
+## Make the run smaller
 
-Large codebases produce a lot of mutants. Two options bound the work.
+A large project has many mutants. Three flags decrease the work:
 
 ```bash
-angelo exec --diff            # only lines changed since HEAD
-angelo exec --diff main       # only lines changed since another revision
-angelo exec --sample 500      # keep 500 mutants, drop the rest at random
+angelo exec --diff            # only the lines that changed since HEAD
+angelo exec --diff main       # only the lines that changed since a different revision
+angelo exec --sample 500      # keep 500 random mutants, delete the others
 ```
 
-`--diff` is the one to reach for during development, because it scopes mutation to the
-change you are actually working on. There is a second one, `--diff-base`, for a pull
-request — and the difference between them is not cosmetic, so it is spelled out in
+Use `--diff` while you write code. It mutates only your current change. For a pull
+request, use `--diff-base`. The two flags are different. See
 [Integrations](integrations.md).
 
-`--sample` behaves differently from what the name might suggest, and the difference
-matters. It **deletes** the surplus mutants from the database rather than deferring them.
-What remains is a random draw from the whole codebase, so the resulting score is an
-estimate over a sample rather than a complete census. Angelo says so on every sampled
-run. See [operators and sampling](06-operators-and-sampling.md).
+`--sample` **deletes** the other mutants from the database. The remaining mutants are a
+random sample of the full project. Thus the score is an estimate, not a full count. Angelo
+tells you this on each sampled run. See
+[operators and sampling](06-operators-and-sampling.md).
 
 ## Configuration
 
-`angelo.conf` is TOML.
+`angelo.conf` uses TOML.
 
 ```toml
 paths = ["src"]                      # what to mutate
@@ -271,15 +244,15 @@ arid = ["log", "logger", "logging", "print", "warn", "warnings"]
 per_line_cap = 0                     # 0 keeps every mutant on a line
 ```
 
-Any field you leave out takes its default, so a config written by an older Angelo keeps
-working.
+If you do not write a field, it gets its default value. Thus a configuration file from an
+older version of Angelo continues to work.
 
-### Choosing what to mutate
+### Select the mutations
 
-`operators` names the families a run plants. The default is the set the empirical
-literature supports, which leaves out three that were on before: unary operator insertion
-and the two constant-replacement families, all of which measure poorly on survival,
-productivity and coupling to real faults. Turn one back on by listing it:
+`operators` is the list of mutation families. The default list contains only the families
+that research supports. Three families are off by default: unary operator insertion,
+number literals and string literals. Research shows poor results for all three. To use a
+family, add it to the list:
 
 ```toml
 operators = [
@@ -291,33 +264,31 @@ operators = [
 ]
 ```
 
-A name Angelo does not know **stops the run**, because accepting it silently would drop a
-whole family from the pool and report a higher score for the loss.
+If Angelo does not know a name, **the run stops**. If Angelo ignored the name, it would
+remove a family and the score would increase incorrectly.
 
-`arid` names calls that exist for a person to read rather than for the program to compute
-with. Any dotted segment of the callee matching the list turns the whole statement away,
-and `__repr__` and `__str__` bodies go with it — so nothing inside
-`self.logger.info("got %d", n + 1)` is mutated. Set `arid = []` to mutate everything.
+`arid` is a list of calls that write text for people, for example log calls. If a part of
+the call name is in the list, Angelo does not mutate that statement. Angelo also does not
+mutate `__repr__` and `__str__`. For example, Angelo does not mutate any part of
+`self.logger.info("got %d", n + 1)`. To mutate all statements, set `arid = []`.
 
-`per_line_cap` keeps at most that many mutants on any one line, dropping the rest at
-random. It is the cheapest way to shrink a large pool without narrowing what is studied,
-and like `sample` it makes the score an estimate rather than a census.
+`per_line_cap` is the maximum number of mutants on one line. Angelo removes the other
+mutants at random. Like `sample`, it makes the score an estimate.
 
-Angelo reports what both turned away, because a silent suppression raises a score the same
-way a silent exclusion does:
+Angelo tells you how many mutants each setting removed, because each removal can increase
+the score:
 
 ```
 enumerated 412 mutants across 9 files, 38 skipped by operators and 21 as arid
 ```
 
-The evidence behind every one of these choices is in
+For the research behind these choices, see
 [operators and sampling](06-operators-and-sampling.md).
 
-### Excluding code you did not write
+### Exclude code that you did not write
 
-`paths` says what to mutate. `exclude` carves out the parts of it that are not worth a
-score: generated code, vendored code, or one module that hangs and eats the timeout budget
-on every run. Survivors there are noise nobody will act on.
+`paths` tells Angelo what to mutate. `exclude` removes parts of it: generated code, code
+from other projects, or one module that always hangs. Nobody fixes survivors in such code.
 
 ```toml
 paths = ["src"]
@@ -330,47 +301,29 @@ exclude = [
 
 | In a pattern | Matches |
 | --- | --- |
-| `**` | any run of directories, including none |
-| `*` | any run of characters inside one name, never a `/` |
-| anything else | that name, exactly |
+| `**` | zero or more directories |
+| `*` | zero or more characters in one name, but not `/` |
+| other text | that name exactly |
 
-Patterns are **relative to the project root** and written with forward slashes. Backslashes
-work too, on either side, because Angelo normalises both before matching.
+Patterns are **relative to the project root**. Use forward slashes. Backslashes also work,
+because Angelo changes both to the same form.
 
-An excluded directory is never descended into, so an exclusion is a saving rather than a
-scan. Angelo reports the count — `enumerated 812 mutants across 34 files (3 paths excluded
-by angelo.conf)` — because a silent exclusion quietly raises the score. A pattern that
-matches nothing is not an error, but Angelo warns about it, since a typo is otherwise
-invisible.
+Angelo does not open an excluded directory, so an exclusion also saves time. Angelo prints
+the number of excluded paths, because an exclusion can increase the score:
+`enumerated 812 mutants across 34 files (3 paths excluded by angelo.conf)`. If a pattern
+matches nothing, Angelo gives a warning, because the pattern can contain a typing error.
 
-!!! warning "`exclude` applies at enumeration"
-    Adding a pattern to a run that already has an `.angelo/` changes nothing: those mutants
-    were enumerated already. Delete `.angelo/` and re-run. Same rule as `--diff`.
+!!! warning "`exclude` applies only when Angelo makes the mutants"
+    If `.angelo/` exists, a new pattern has no effect. The mutants exist already. Delete
+    `.angelo/` and run again. The same rule applies to `--diff`.
 
-## When something goes wrong
+## Troubleshooting
 
-**"Angelo could not run the baseline suite."** pytest never got as far as judging your
-code, so there is nothing to measure. Exit code 3 usually means a plugin listed in
-`pyproject.toml` is not installed; exit code 5 means it collected no tests at all. Real
-test failures are exit code 1, and those only warn.
-
-**"The baseline suite is red and Angelo cannot work around that here."** Your suite has
-failing tests *and* no way to route around them. Install `coverage`, keep the default
-`python -m pytest` test command (a virtualenv's own interpreter counts), and leave `test_selection = true`.
-
-**Every mutant is `error`.** Your test command is probably wrong. Run it by hand first.
-
-**Every mutant survived and the score is 0.0%.** Your project's pytest `addopts` loads a
-plugin that takes the coverage run over — pytest-cov or pytest-xdist, usually. Angelo warns
-that the coverage it collected matched no mutant at all. The fix is one flag in
-`test_command`: see
-[neutralising a plugin](ai-setup.md#neutralising-a-plugin-in-addopts).
-
-**Scores drift between runs.** Set `warm_workers = false` and try again. If that fixes
-it, the warm process is carrying state between mutants and it is worth reporting. The same
-setting is required whenever `test_command` carries extra pytest arguments, because the warm
-worker does not pass them on.
-
-**"No matching distribution found for angelo."** There is no wheel for your platform, and
-there is deliberately no sdist, so pip fails immediately rather than compiling Rust for five
-minutes. Build from source, or check the wheel table above.
+| Message or symptom | Cause and fix |
+| --- | --- |
+| "Angelo could not run the baseline suite." | pytest did not test your code. Exit code 3 usually means that a plugin in `pyproject.toml` is not installed. Exit code 5 means that pytest found no tests. Test failures are exit code 1, and they give only a warning. |
+| "The baseline suite is red and Angelo cannot work around that here." | Your suite has failing tests, and Angelo cannot select tests around them. Install `coverage`. Use the default `python -m pytest` test command (the Python of a virtual environment is permitted). Keep `test_selection = true`. |
+| All mutants are `error`. | Your test command is probably wrong. Run it yourself first. |
+| All mutants survived and the score is 0.0%. | A pytest plugin in `addopts` controls coverage, usually pytest-cov or pytest-xdist. Angelo gives a warning that its coverage data matched no mutant. To fix this, add one flag to `test_command`. See [Neutralising a plugin](ai-setup.md#neutralising-a-plugin-in-addopts). |
+| The score changes between identical runs. | Set `warm_workers = false` and try again. If this fixes the problem, please report it. Also set `warm_workers = false` when `test_command` has extra pytest arguments, because the warm worker does not use them. |
+| "No matching distribution found for angelo-mut." | There is no wheel for your platform. There is no source package, so pip stops immediately. Build from source, or look at the platform table above. |

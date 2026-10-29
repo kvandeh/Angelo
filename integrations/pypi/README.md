@@ -1,50 +1,47 @@
 # Angelo
 
-**Fast mutation testing for Python.** One Rust binary that drives your ordinary pytest suite,
-breaks your code on purpose one small change at a time, and reports which changes your tests
-failed to notice.
+**Fast mutation testing for Python.** Angelo is one Rust binary. It makes small changes to
+your code on purpose, runs your pytest suite, and reports each change that no test detected.
 
-Coverage tells you a line ran. It does not tell you whether anything checked the result.
+Coverage tells you that a line ran. It does not tell you that a test checked the result.
 
 ```python
 def is_adult(age):
     return age >= 18
 ```
 
-Change `>=` to `>` and the function rejects eighteen year olds. If your tests still pass, the
-boundary was never tested — at 100% coverage. Angelo finds that line and tells you about it.
+Change `>=` to `>`. The function now rejects people who are 18. If your tests still pass,
+no test checks the boundary, even at 100% coverage. Angelo finds this line and reports it.
 
 ## Install
 
 ```bash
-pip install --index-url https://test.pypi.org/simple/ angelo
+pip install angelo-mut
 ```
 
-Releases go to **TestPyPI** while the pipeline is being proven. TestPyPI makes no retention
-promises, so pin a version in anything that matters.
+The package is `angelo-mut`. The command is `angelo`.
 
-The wheel carries the compiled binary and no Python at all, so `pip` puts `angelo` on your
-PATH and nothing here is ever imported. The interpreter that installs it is irrelevant.
-Wheels are built for Windows x86-64, Linux x86-64 and Apple Silicon; there is deliberately
-**no sdist**, so an unsupported platform fails immediately rather than compiling Rust for
-five minutes.
+The wheel contains only the compiled binary. It contains no Python code, so any Python
+interpreter can install it. There are wheels for Windows x86-64, Linux x86-64 and macOS
+Apple Silicon. There is **no source package**, on purpose. On a different platform, pip
+stops immediately. It does not compile Rust for five minutes.
 
 ## Use
 
 ```bash
 cd your-project
-angelo init      # detect the layout, write angelo.conf
-angelo exec      # enumerate mutants, then run them
+angelo init      # finds your layout and writes angelo.conf
+angelo exec      # makes the mutants and runs them
 ```
 
-Needs **python and pytest** on your PATH. `pip install coverage` is strongly recommended: it
-unlocks batching and test selection, which provide most of the speed.
+You need **Python and pytest** on your PATH. We recommend `pip install coverage`. Batching
+and test selection need it, and they give most of the speed.
 
-Runs natively on Windows, Linux and macOS. Unlike mutmut, it does not need `fork()`.
+Angelo runs on Windows, Linux and macOS. It does not need `fork()`.
 
 ## Documentation
 
-Full documentation, including CI recipes and the SonarQube integration, at
+The full documentation, with CI examples and the SonarQube integration, is at
 **<https://angelo.kcvdh.com/>**.
 
-Source and issues: <https://github.com/kvandeh/angelo>
+Source code and issues: <https://github.com/kvandeh/angelo>

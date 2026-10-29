@@ -1,147 +1,151 @@
 # Warm workers
 
-!!! abstract "In one sentence"
-    Once only the relevant tests run, almost all remaining time is spent starting Python.
-    Unix tools avoid that with `fork()`, which Windows lacks, so Angelo keeps one pytest
-    process alive instead. Measured at **2.5x faster**, verdicts unchanged.
+!!! abstract "Summary"
+    After test selection, most of the remaining time is Python startup. Unix tools use
+    `fork()` to prevent this. Windows has no `fork()`. Thus Angelo keeps one pytest process
+    alive. Result: **2.5x faster**, with the same verdicts.
 
 ## The problem
 
-After [test selection](02-test-selection.md), a mutant costs about 330 milliseconds. Only
-about 15 of those milliseconds are testing.
+After [test selection](02-test-selection.md), one mutant takes approximately 330
+milliseconds. Only approximately 15 milliseconds of that is testing.
 
 | Step | Time |
 | --- | --- |
 | Start the interpreter | 18 ms |
 | Import pytest | 155 ms |
 | Collect and configure | 139 ms |
-| Run the actual test | 15 ms |
+| Run the test | 15 ms |
 | **Total** | **327 ms** |
 
-Roughly 95 percent of a run is setup that produces no information. No amount of smarter
-scheduling helps, because the cost is paid before scheduling begins.
+Approximately 95% of a run is setup, and setup gives no information. Better scheduling
+cannot help, because this cost occurs before the test starts.
 
-## How other tools avoid it
+## How other tools prevent it
 
-`fork()` clones a running process almost instantly, and the clone inherits everything the
-parent had already imported. A mutation tester can therefore import pytest once, then fork
-a fresh warm copy per mutant. Each copy starts hot and dies with its mess contained.
+`fork()` makes a copy of a running process almost immediately. The copy has all the modules
+that the parent imported. Thus a mutation tool can import pytest once and then make a fork
+for each mutant. Each copy starts with pytest loaded. When it stops, all its changes stop
+with it.
 
-This is why mutmut is fast. It is also why mutmut **refuses to run on Windows at all**,
-telling you to use WSL, because Windows has no `fork()`.
+For this reason, mutmut is fast. For the same reason, mutmut **does not run on Windows**.
+It tells you to use WSL, because Windows has no `fork()`.
 
-## A rejected alternative
+## An alternative that we rejected
 
-Python 3.14 added `concurrent.interpreters` through PEP 734. Subinterpreters are isolated,
-cheap, and work on Windows, which makes them an obvious candidate.
+Python 3.14 added `concurrent.interpreters` (PEP 734). Subinterpreters are isolated and
+fast to create, and they work on Windows. Thus they looked like a good replacement.
 
-They were measured rather than assumed:
+We measured them:
 
 | Step | Time |
 | --- | --- |
 | Create a subinterpreter | 15 ms |
-| Import pytest inside it | **131 ms** |
-| Import pytest cold, main interpreter | 119 ms |
+| Import pytest in it | **131 ms** |
+| Import pytest cold, in the main interpreter | 119 ms |
 
-**There is no saving.** Isolation is precisely the point of a subinterpreter: each one
-gets its own `sys.modules` and re-executes every import. The value of `fork()` is
-inheriting imports, and PEP 734 deliberately does not do that.
+**There is no saving.** Each subinterpreter has its own `sys.modules`, so it must import
+everything again. The value of `fork()` is that the copy keeps the imports. PEP 734 does
+not do this, on purpose.
 
-This result is recorded so nobody repeats the experiment.
+We record this result so that nobody does the experiment again.
 
-## What Angelo does instead
+## What Angelo does
 
-Keep the process. Reset only the part that actually changed.
+Angelo keeps the process alive. It resets only the parts that changed.
 
 ```mermaid
 sequenceDiagram
     participant A as angelo
     participant P as pytest process
     A->>P: start once
-    Note over P: import pytest, 170ms, paid once
+    Note over P: import pytest, 170 ms, only once
     loop each mutant
-        A->>A: patch the file
+        A->>A: change the file
         A->>P: which tests to run
-        Note over P: forget the project's own modules
-        Note over P: run them
+        Note over P: remove the modules of the project
+        Note over P: run the tests
         P-->>A: exit code and failures
     end
-    A->>P: kill when finished
+    A->>P: stop at the end
 ```
 
-Between mutants the worker deletes every module whose file lives inside the project copy.
-The mutated source is therefore re-imported on the next run, while pytest, the standard
-library and site-packages stay loaded. That is the entire saving.
+Between two mutants, the worker removes each module whose file is in the project copy.
+Thus Python imports the changed source again on the next run. pytest, the standard library
+and site-packages stay loaded. This gives all of the saving.
 
-## Keeping it safe
+## Safety
 
-A long lived process accumulating state is exactly the kind of thing that produces wrong
-verdicts, so three guards apply.
+A process that stays alive can collect state, and state can cause wrong verdicts. Thus
+these rules apply.
 
-**Any anomaly retires the worker.** A crash, or a reply Angelo cannot parse, means the
-process is killed and the mutant is re-run in a fresh subprocess. Warm running can
-therefore only change the clock.
+**A problem stops the worker.** If the process crashes, or if Angelo cannot read its reply,
+Angelo stops the process. It then runs the mutant again in a new subprocess. Thus warm
+workers can change the duration, but not the verdict.
 
-A timeout retires a **purging** worker, which is still stuck on the test that hung. It does
-not retire a [forking](08-schemata.md#isolation) one: that parent never ran the test, it
-killed the child's process group and carried on, so restarting it would repay a warm-up
-that nothing has dirtied.
+A timeout stops a **purging** worker, because that worker is still in the test that hung. A
+timeout does not stop a [forking](08-schemata.md#isolation) worker. That parent did not run
+the test. It stopped the process group of the child and continued. A restart would repeat
+a warm-up that has no problems.
 
-**An `error` is checked again in a fresh process.** A mutant can change the standard
-library, and a purge cannot undo that change. Before each run, the worker also restores the
-working directory, the environment and the standard streams.
+**Angelo checks each `error` again in a new process.** A mutant can change the standard
+library, and the module removal cannot undo that change. Before each run, the worker also
+resets the working directory, the environment variables and the standard streams.
 
-**The process recycles.** After `warm_recycle_after` runs, default 50, it is replaced.
-This bounds anything that survives the module purge — and it does nothing on the fork path,
-where nothing accumulates to bound.
+**The process restarts.** After `warm_recycle_after` runs (default 50), Angelo replaces the
+process. This limits any state that the module removal does not remove. On the fork path,
+this setting has no effect, because no state collects there.
 
-**It only applies to plain pytest commands.** Anything else uses subprocesses.
+**Warm workers apply only to `python -m pytest` commands.** Other commands use
+subprocesses.
 
 ## Result
 
-Two hundred mutants, eight workers.
+200 mutants, 8 workers.
 
-| Configuration | warm off | warm on | Gain |
+| Configuration | Warm off | Warm on | Improvement |
 | --- | --- | --- | --- |
 | 0.2 s suite, batch 1 | 9.29 s | **3.77 s** | 2.5x |
 | 2.0 s suite, batch 1 | 11.20 s | **5.94 s** | 1.9x |
 | 2.0 s suite, batch 8 | 5.12 s | 4.45 s | 1.15x |
 
-Warm workers pay most where runs are many and each is cheap, which is the mirror image of
-test selection. Together with batching, the full stack takes a 48.1 second job down to
-4.5 seconds.
+Warm workers give the most improvement when there are many short runs. Test selection is
+the opposite. With batching and test selection, a 48.1-second job takes 4.5 seconds.
 
-## Four bugs this cost
+## Four bugs that warm workers caused
 
-All four were silent. Tests found the first two. Real repositories found the last two.
+None of the four bugs gave an error message. Tests found the first two. Real projects found
+the last two.
 
-**Purging `__main__` broke pytest.** The worker script itself is `__main__`, and it lives
-inside the project copy, so the module purge deleted it. Python's debugger imports
-`__main__`, so every mutant came back as an error.
+**The removal of `__main__` broke pytest.** The worker script is `__main__`, and it is in
+the project copy. Thus the module removal deleted it. The Python debugger imports
+`__main__`, so each mutant got the status `error`.
 
-**pytest's output collided with the protocol.** Both were writing to the same stdout, so
-the reader parsed "1 passed" as a reply. Replies now carry a marker prefix.
+**The pytest output mixed with the protocol.** Both wrote to the same stdout. Thus the
+reader read "1 passed" as a reply. Now each reply starts with a marker.
 
-**A parametrised test hid the failures after it.** The reader cut the list of failed tests
-at the first `]`. A name such as `test_x[a-1]` has one. In a batch, Angelo lost every later
-failure and recorded `survived` for its mutant.
+**A parametrised test hid the failures after it.** The reader stopped the list of failed
+tests at the first `]`. A name such as `test_x[a-1]` contains one. In a batch, Angelo lost
+each later failure and recorded `survived` for its mutant.
 
-| Repository, 1000 mutants | False survivors at batch 8 |
+| Project, 1000 mutants | False survivors at batch 8 |
 | --- | --- |
 | flask | 113 |
 | click | 106 |
 | markupsafe | 46 |
 
-**A leak became an `error`.** On click, 44 of 1000 verdicts were `error` with warm workers
-on, and not with warm workers off. One mutant in that sample removes the line that restores
-`pdb.Pdb.__init__`, and no purge undoes that change. Now a fresh process checks each
-`error`.
+**State from one mutant caused an `error` for others.** On click, 44 of 1000 verdicts were
+`error` with warm workers on, and none with warm workers off. One mutant in that sample
+removes the line that resets `pdb.Pdb.__init__`. The module removal cannot undo this. Now a
+new process checks each `error`.
 
 ## Limits
 
-- Only for `python -m pytest` style commands.
-- State can outlive a purge. C extension globals and third party caches holding project
-  objects are the realistic cases. Recycling bounds this; it does not remove it.
-- A hanging mutant costs a worker restart rather than just a process kill.
-- **If a score ever drifts between runs, set `warm_workers = false` first.** This is the
-  same risk class as the stale bytecode bug in [benchmarks](05-benchmarks.md).
+- Warm workers apply only to `python -m pytest` commands.
+- Some state can stay after the module removal. Examples: global variables in C extensions,
+  and third-party caches that keep project objects. The restart limits this risk. It does
+  not remove it.
+- On the purge path, a mutant that hangs causes a restart of the worker, not only a stop of
+  one process.
+- **If a score changes between identical runs, first set `warm_workers = false`.** This is
+  the same type of risk as the old-bytecode bug in [benchmarks](05-benchmarks.md).

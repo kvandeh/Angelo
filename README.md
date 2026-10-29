@@ -1,12 +1,12 @@
 <h1 align="center">Angelo</h1>
 
 <p align="center">
-  <em>Python mutation testing is slow and expensive, but what if it wasn't?</em>
+  <em>Fast mutation testing for Python.</em>
 </p>
 
 <p align="center">
-  <a href="https://github.com/kvandeh/angelo/releases">
-    <img alt="Release" src="https://img.shields.io/github/v/release/kvandeh/angelo?display_name=tag&sort=semver&color=orange">
+  <a href="https://pypi.org/project/angelo-mut/">
+    <img alt="PyPI" src="https://img.shields.io/pypi/v/angelo-mut?color=orange">
   </a>
   <a href="https://angelo.kcvdh.com/">
     <img alt="Documentation" src="https://img.shields.io/badge/docs-angelo.kcvdh.com-blue">
@@ -25,33 +25,65 @@
 
 ---
 
-Angelo measures how good your tests actually are. It breaks your code on purpose, one
-small change at a time, and reports which changes your test suite failed to notice. It is
-a single Rust binary that drives your ordinary pytest suite.
+Angelo measures the quality of your tests. It makes small changes to your code on purpose.
+Then it runs your pytest suite and reports each change that no test detected. Angelo is
+one Rust binary. It does not replace pytest. It uses your existing suite.
 
-## The problem it solves
+## The problem
 
-Coverage tells you a line ran. It does not tell you whether anything checked the result.
+Coverage tells you that a line ran. It does not tell you that a test checked the result.
 
 ```python
 def is_adult(age):
     return age >= 18
 ```
 
-Change `>=` to `>` and the function now rejects eighteen year olds. If your tests still
-pass, the boundary was never tested, even at 100% coverage. Angelo finds that line and
-tells you about it.
+Change `>=` to `>`. The function now rejects people who are 18. If all your tests still
+pass, no test checks this boundary. This is true even at 100% coverage. Angelo finds this
+line and reports it.
 
-Each deliberate change is a **mutant**. A mutant is **killed** when a test fails, and it
-**survived** when every test passed. Survivors are the output worth reading: each one is a
-bug you could ship without a single test objecting.
+| Term | Meaning |
+| --- | --- |
+| **Mutant** | One deliberate change to your code |
+| **Killed** | At least one test failed. Your suite detected the change. |
+| **Survived** | All tests passed. Your suite did not detect the change. |
+| **Score** | Detected mutants divided by scored mutants |
+
+Read the survivors first. Each survivor is a bug that you can ship and no test will fail.
+
+## Install
+
+```bash
+pip install angelo-mut
+```
+
+The package is `angelo-mut` because a different project already uses the name `angelo` on
+PyPI. The command is `angelo`.
+
+The wheel contains only the compiled binary. It contains no Python code, so any Python
+interpreter can install it.
+
+| Platform | Wheel |
+| --- | --- |
+| Windows x86-64 | yes |
+| Linux x86-64 | yes (manylinux) |
+| macOS Apple Silicon | yes |
+| Other platforms | build from source |
+
+To build from source, you need a Rust toolchain:
+
+```bash
+git clone https://github.com/kvandeh/angelo.git
+cd angelo/Angelo
+cargo build --release   # writes target/release/angelo
+```
 
 ## Quick start
 
 ```bash
 cd your-project
-angelo init      # detect the layout, write angelo.conf
-angelo exec      # enumerate mutants, then run them
+angelo init      # finds your layout and writes angelo.conf
+angelo exec      # makes the mutants and runs them
 ```
 
 ```
@@ -59,157 +91,116 @@ angelo exec      # enumerate mutants, then run them
 16:20:09 INFO   baseline green in 4.8s, timeout 14.5s for a whole-suite run, from its own tests for a selected one
 16:20:09 INFO   9 mutants sit on lines no test executes, survived without a single run
 16:20:09 INFO   running 17 batches on 16 workers, covering tests only
-  mutants   [############################--------]  78%  51/65  detected 34  survived 17  ~11s left
 
 survivors (changes your tests never noticed):
-  calculator.py:4 0.21 -> 1.21
-  calculator.py:24 < -> <=
+  calculator.py:31 >= -> >
+  calculator.py:35 and -> or
 
-Mutate what the branch added, and fail if too much of it survived.
+=== mutation report ===
+    killed: 46
+  survived: 28
+     score: 62.2% (46/74 detected)
+```
+
+The report goes to stdout. The log lines and the progress bar go to stderr. A script can
+read the report at all verbosity levels. To show fewer log lines, use `--verbosity warn`.
+
+For the full first run, see [Run it locally](https://angelo.kcvdh.com/quick-start/).
+
+## Use it in CI
+
+This step mutates only the lines that a pull request adds. It fails when the score is
+below 80%.
 
 ```yaml
 - uses: actions/checkout@v4
   with:
     fetch-depth: 0
+- run: pip install angelo-mut coverage
 - run: angelo exec --diff-base $GITHUB_BASE_REF --fail-under 80
 ```
 
-`--fail-under` exits 1 with one line: `score 62.2% is below --fail-under 80.0%`. A run that
-could not be scored fails it too, because a tool that could not measure must never report
-success. See the [Quick Start](https://angelo.kcvdh.com/quick-start/).
+A run that Angelo cannot score also fails `--fail-under`. A tool that did not measure must
+not report success.
 
-**The report is output; everything above it is commentary.** The report goes to stdout and
-prints at every verbosity, so a script can read it. The timestamped lines and the bar go to
-stderr, and `--verbosity` turns them down.
+## Reports
 
-```bash
-angelo exec --verbosity warn      # error | warn | info | debug | trace
-```
-
-The default is `info`, or `warn` when the `CI` environment variable is set, because in CI
-nobody is watching it scroll past. `RUST_LOG` works too. Off a terminal the bar disappears
-by itself, so a piped run stays byte-clean.
-
-## Reports you can keep
-
-A run that only ever reached a terminal cannot be attached to a pull request.
-
-```bash
-angelo exec --html-report angelo.html   # one self-contained file, no network
-angelo exec --report angelo.json        # the mutation-testing-report schema
-```
-
-The JSON is not a shape Angelo invented. It is
-[`mutation-testing-report-schema`](https://github.com/stryker-mutator/mutation-testing-elements/tree/master/packages/report-schema)
-version 2, the format StrykerJS, Stryker.NET, Stryker4s and muttest all write, so Stryker's
-existing viewers and dashboards read an Angelo run without a converter. See
-[reports](https://angelo.kcvdh.com/07-reports/).
-
-Survivors also go straight to **SonarQube**, so they land on the dashboard your team already
-reads:
-
-```bash
-angelo exec --sonar-report angelo-sonar.json   # sonar.externalIssuesReportPaths
-```
-
-No plugin, no Java, nothing installed on the server, and it works on SonarQube Cloud. See
-[SonarQube](https://angelo.kcvdh.com/09-sonarqube/).
-
-A self-hosted SonarQube can go further. The
-[plugin](https://angelo.kcvdh.com/10-sonar-plugin/) in `integrations/sonarqube/` publishes the
-mutation score as a **real SonarQube metric**, with history and a quality-gate condition on
-the number. Third-party plugins do not run on SonarQube Cloud, so that half is Server and
-Community Build only.
-
-## What mutation testing is
-
-Most of a mutation run is not testing. On one selected test, roughly 95% of the 327 ms
-goes to starting Python and importing pytest. Angelo attacks that from four directions:
-
-| Technique | What it skips |
+| Flag | Writes |
 | --- | --- |
-| [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | Runs. Several mutants share one test run. |
-| [Test selection](https://angelo.kcvdh.com/02-test-selection/) | Tests. Only the ones that reach the mutant. |
-| [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | Startup. One pytest process stays alive. |
-| `--diff`, `--diff-base` and `--sample` | Mutants. Only changed lines, only what a branch adds, or a random sample. |
+| `--html-report angelo.html` | One self-contained HTML file. It needs no network. |
+| `--report angelo.json` | The [mutation-testing-report schema](https://github.com/stryker-mutator/mutation-testing-elements/tree/master/packages/report-schema), version 2. Stryker viewers can read it. |
+| `--sonar-report angelo-sonar.json` | SonarQube's generic issue format. You do not install anything on the server. |
 
-On a synthetic 200 mutant project with a two second suite, these take **48.1s down to
-4.5s** with an identical score.
+A self-hosted SonarQube can also show the score as a metric, with history and a quality
+gate. For this, install the [plugin](https://angelo.kcvdh.com/10-sonar-plugin/). SonarQube
+Cloud does not run third-party plugins.
+
+## Why it is fast
+
+Most of the time in a mutation run is not test time. For one selected test, approximately
+95% of 327 ms is Python startup and the pytest import. Angelo removes work in four ways:
+
+| Technique | What it removes |
+| --- | --- |
+| [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | Runs. Some mutants share one test run. |
+| [Test selection](https://angelo.kcvdh.com/02-test-selection/) | Tests. A run executes only the tests that reach its mutants. |
+| [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | Startup. One pytest process stays alive between runs. |
+| `--diff`, `--diff-base`, `--sample` | Mutants. Only changed lines, or a random sample. |
+
+On a synthetic project with 200 mutants and a 2-second suite, the run time decreases from
+**48.1 s to 4.5 s**. The score does not change.
 
 > [!WARNING]
-> That figure is an upper bound. It comes from a project with independent functions and no
-> timeouts, which is the best case for all three techniques. Measured against the real
-> [click](https://github.com/pallets/click) codebase, where about 7% of mutants hang until
-> the timeout, the same techniques bought almost nothing, because waiting for timeouts
-> dominates. The [benchmarks](https://angelo.kcvdh.com/05-benchmarks/) page reports
-> both results.
+> This number is a best case. The project has independent functions and no timeouts. On
+> the real [click](https://github.com/pallets/click) codebase, approximately 7% of mutants
+> hang until the timeout. There, the wait for timeouts is most of the run time. The
+> [benchmarks](https://angelo.kcvdh.com/05-benchmarks/) page shows both results.
 
 ## The rule everything obeys
 
-Batching, test selection and warm workers are **speed features only**. None may change a
-verdict.
+Batching, test selection and warm workers make a run faster. **They must not change a
+verdict.**
 
-This is enforced rather than promised. [`scripts/verdict-matrix.sh`](scripts/verdict-matrix.sh)
-runs eight configurations against the same project and fails the build if any of them
-disagrees about the score. It runs in CI on every push. A speedup that changes a result is
-treated as a bug.
+[`scripts/verdict-matrix.sh`](scripts/verdict-matrix.sh) enforces this rule. It runs eight
+configurations on the same project. If two configurations give different scores, the build
+fails. CI runs it on each pull request. A speed-up that changes a result is a bug.
 
 ## Requirements
 
-- **python and pytest** on your PATH.
-- **A passing test suite.** Angelo refuses to run against a red one, because a failing test
-  cannot tell you anything about a planted fault.
-- **`pip install coverage`**, strongly recommended. Coverage unlocks batching and test
-  selection, which provide most of the speed. Without it Angelo still works, one mutant per
-  run.
+- **Python and pytest** on your PATH.
+- **A test suite that runs.** Some failing tests are permitted. Angelo gives a warning and
+  does not score the mutants that those tests cover.
+- **`pip install coverage`**. This is optional, but recommended. Batching and test
+  selection need coverage. Without it, Angelo runs one mutant at a time.
 
-Runs natively on Windows, Linux and macOS. Unlike mutmut, it does not need `fork()`.
-
-## Installing
-
-Not on PyPI proper yet. Releases go to **TestPyPI** while the pipeline is being proven:
-
-```bash
-pip install --index-url https://test.pypi.org/simple/ angelo
-```
-
-The wheel carries the compiled binary rather than any Python, so `pip` puts `angelo` on
-your PATH and nothing gets imported. Wheels are built for Windows x86-64, Linux x86-64 and
-Apple Silicon; anything else builds from source:
-
-```bash
-git clone https://github.com/kvandeh/angelo.git
-cd angelo/Angelo
-cargo build --release   # Angelo/target/release/angelo
-```
+Angelo runs on Windows, Linux and macOS. It does not need `fork()`.
 
 ## Documentation
 
-Full documentation at **[angelo.kcvdh.com](https://angelo.kcvdh.com/)**.
-Each page is written as a short paper: abstract, background, method, result, limits.
+The full documentation is at **[angelo.kcvdh.com](https://angelo.kcvdh.com/)**.
 
-| Page | Covers |
+| Page | Contents |
 | --- | --- |
-| [Run it locally](https://angelo.kcvdh.com/quick-start/) | First run, reading the report, configuration, troubleshooting |
+| [Run it locally](https://angelo.kcvdh.com/quick-start/) | First run, the report, configuration, troubleshooting |
 | [Integrations](https://angelo.kcvdh.com/integrations/) | CI, pull requests, SonarQube, PyPI |
-| [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | The conflict rule and why it is sound |
-| [Test selection](https://angelo.kcvdh.com/02-test-selection/) | Coverage into pytest node ids |
-| [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | The `fork()` substitute, and why subinterpreters are not one |
+| [Batch mutating](https://angelo.kcvdh.com/01-batch-mutating/) | The conflict rule, and why it is safe |
+| [Test selection](https://angelo.kcvdh.com/02-test-selection/) | From coverage data to pytest node ids |
+| [Warm workers](https://angelo.kcvdh.com/03-warm-workers/) | The replacement for `fork()` on Windows |
 | [Architecture](https://angelo.kcvdh.com/04-architecture/) | Module map and design rules |
-| [Benchmarks](https://angelo.kcvdh.com/05-benchmarks/) | Every measurement, including the disappointing ones |
-| [Operators and sampling](https://angelo.kcvdh.com/06-operators-and-sampling/) | Which operators the evidence supports, where not to apply them, and how to cap the pool |
+| [Benchmarks](https://angelo.kcvdh.com/05-benchmarks/) | All measurements, also the bad results |
+| [Operators and sampling](https://angelo.kcvdh.com/06-operators-and-sampling/) | Which mutations Angelo makes, and why |
 
 ## Status
 
-In development. The core works and is tested, but expect rough edges and no stability
-guarantee yet.
+Angelo is in development. The core works and has tests. The interface can change before
+version 1.0.
 
 ## Contributing and support
 
-Pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) is one paragraph.
+Pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 If Angelo is useful to you, [sponsorship](https://github.com/sponsors/kvandeh) pays for the
-time it takes. Reporting a wrong verdict is worth just as much: see
+work. A report of a wrong verdict is also very useful. See
 [Support](https://angelo.kcvdh.com/support/).
 
 ## Author

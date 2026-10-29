@@ -654,9 +654,10 @@ enumeration, so `.angelo/` has to be deleted before the scope can widen again. A
 prints no score at all: zero mutants is zero information, not a pass.
 
 **Name.** Angelo, renamed from magneto on 2026-07-26. `angelo` on crates.io is free; on
-PyPI it is a dead 2021 turtle-graphics toy with one release. On **TestPyPI** the plain name
-is free, so the playground publishes as `angelo` and the real PyPI suffix still gets
-settled at publish time, not before.
+PyPI it is a dead 2021 turtle-graphics toy with one release. So real PyPI carries
+**`angelo-mut`** and TestPyPI, where the plain name is free, carries `angelo`. The command
+is `angelo` in both. `release.yml` rewrites the `name` line of `pyproject.toml` at build
+time for PyPI only, and checks the rewrite took, so the file keeps saying `angelo`.
 
 **Packaging.** `integrations/pypi/pyproject.toml`, maturin with `bindings = "bin"` and a `manifest-path` pointing at the crate beside it. The wheel carries
 `angelo.exe` in its scripts directory and no Python whatsoever, so the tag is
@@ -673,10 +674,12 @@ headline "an optimisation changed the verdicts", which points at the wrong thing
 Give the container its own `CARGO_TARGET_DIR`; the script now refuses to start rather than
 misdiagnose it.
 
-**Publishing.** TestPyPI, over OIDC **trusted publishing**, so no token exists in the
-repository at all. The match is on three names together — repository, workflow file name,
-environment — and renaming `release.yml` breaks the upload until the publisher on TestPyPI
-is renamed to match.
+**Publishing.** Two indexes, one per branch, both over OIDC **trusted publishing**, so no
+token exists in the repository at all. A push to `develop` publishes to **TestPyPI** as
+`angelo` (environment `testpypi`); a push to `main` cuts the GitHub Release and publishes to
+**PyPI** as `angelo-mut` (environment `pypi`). The match is on three names together —
+repository, workflow file name, environment — and renaming `release.yml` breaks both uploads
+until both publishers are renamed to match.
 
 It lives **inside `release.yml`** rather than in a workflow of its own, and that is not a
 tidiness preference. A GitHub Release cut with the default `GITHUB_TOKEN` never starts
@@ -684,15 +687,18 @@ another workflow, so a separate publishing workflow could not be triggered by th
 it exists to publish; it would sit silent while looking wired up. One workflow, one
 trigger, one version.
 
-`version` reads Cargo.toml and decides two things: whether to cut a release (no, if the tag
-exists) and whether to build wheels (yes on a manual run either way, so a broken publisher
-can be retried without a version bump). `release` and `testpypi` then run **beside** each
-other, so a sandbox being down never blocks shipping a binary that already built. The
+`version` reads Cargo.toml and decides which index the branch feeds and whether to build
+wheels. On `main`: a release and wheels unless the tag exists. On `develop`: never a
+release, and wheels only when TestPyPI does not already hold that version, so an ordinary
+push is a no-op and bumping Cargo.toml is what publishes. A manual run builds wheels either
+way, so a broken publisher can be retried without a version bump. `release` and the
+publishing job then run **beside** each other, so an index being down never blocks shipping
+a binary that already built. The
 wheels job uploads `Angelo/target/release/angelo.exe` too, because maturin ran a plain
 `cargo build --release` and the release should not build the same binary twice. No
-`skip-existing`; a version TestPyPI already holds should fail loudly and be bumped.
+`skip-existing`; a version an index already holds should fail loudly and be bumped.
 
-**Roadmap.** More operators, aarch64 and Intel-macOS wheels, real PyPI, conda.
+**Roadmap.** More operators, aarch64 and Intel-macOS wheels, conda.
 
 ## Where the code lives
 
@@ -767,7 +773,7 @@ reads as clear.
 | --- | --- |
 | **lint-and-test** | lint on every push; tests and the verdict matrix on a pull request or on master/main/develop, ubuntu and windows. Every cargo step carries `working-directory: Angelo` |
 | **docs** | on push to master: builds and deploys to Pages |
-| **release** | on push to master, or by hand: version from `Angelo/Cargo.toml`, skipped if the tag exists, builds a wheel per platform, ships `angelo.exe` and `src.zip`, uploads to TestPyPI, body is the merge commit message |
+| **release** | on push to main or develop, or by hand: version from `Angelo/Cargo.toml`. main: skipped if the tag exists, builds a wheel per platform, ships `angelo.exe` and `src.zip`, uploads to PyPI as `angelo-mut`, body is the merge commit message. develop: no release, uploads to TestPyPI as `angelo` when that version is new |
 | **testpypi** | by hand only, for retrying a publish without a release |
 | **sonarqube-plugin** | on a change under `integrations/sonarqube/`: builds the jar, **starts a real SonarQube and asserts the plugin loads**, then cuts its own release tagged `sonarqube-plugin-v*` |
 

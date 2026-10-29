@@ -1,41 +1,42 @@
 # Schemata
 
-!!! abstract "In one sentence"
-    Splicing writes one mutant into a file, so the process must re-import the project to
-    see it. Schemata write **every** mutant in at once and pick one with an environment
-    variable, so nothing is re-imported — but only `fork()` makes that safe, so it is a
-    Unix path and Windows keeps splicing.
+!!! abstract "Summary"
+    A splice writes one mutant into a file. Thus the process must import the project again
+    to see it. Schemata write **all** mutants into the file at once, and an environment
+    variable selects one. Thus nothing is imported again. Only `fork()` makes this safe.
+    Thus schemata apply only on Unix. Windows continues to use splices.
 
 ## The problem
 
-[Warm workers](03-warm-workers.md) keep pytest imported and drop the project's own modules
-between mutants, so the mutated source is re-imported. That re-import is the last
-per-mutant cost left, and it grows with the project.
+[Warm workers](03-warm-workers.md) keep pytest imported. Between mutants, they remove the
+modules of the project, so Python imports the changed source again. This import is the last
+cost for each mutant, and it increases with the size of the project.
 
-Measured in a forked child, running one test either way:
+Measured in a forked child, with one test in each case:
 
-| Project | re-import per mutant | keep the imports | cost |
+| Project | Import again for each mutant | Keep the imports | Cost |
 | --- | --- | --- | --- |
 | 2 modules | — | — | 1 ms (1.05x) |
 | 63 modules | 48.1 ms | 17.3 ms | **31 ms (2.76x)** |
 
-On [`demo/`](https://github.com/kvandeh/angelo/tree/main/demo) it is worth nothing. On a
-real package it is most of what a run costs.
+On [`demo/`](https://github.com/kvandeh/angelo/tree/main/demo), this gives no improvement.
+On a real package, it is most of the cost of a run.
 
 ## What mutmut does
 
-mutmut is fast because of schemata, not because of `fork()`. It rewrites the tree once
-into a `mutants/` directory, turning each function into a family, and selects one member
-per run from `MUTANT_UNDER_TEST`. `fork()` is what makes reusing the process safe, since
-nothing is re-imported to reset it.
+Schemata make mutmut fast, not `fork()`. mutmut writes the syntax tree once into a
+`mutants/` directory. Each function becomes a family of copies. `MUTANT_UNDER_TEST` selects
+one copy for each run. `fork()` makes it safe to use the process again, because nothing is
+imported again to reset it.
 
-Fork **without** schemata was measured first and is not worth having: it is about 2x
-slower than the purge, because a child pays pytest's per-session setup that a long-lived
-process amortises.
+We measured fork **without** schemata first. It is not useful: it is approximately 2x
+slower than the module removal. Each child must do the pytest session setup again. A
+process that stays alive does this setup only once.
 
 ## Method
 
-One function becomes its original, one copy per mutant, a lookup table and a wrapper.
+One function becomes four parts: its original, one copy for each mutant, a lookup table,
+and a wrapper.
 
 ```python
 def add__angelo_orig(a, b):
@@ -51,75 +52,78 @@ def add(*args, _angelo_orig=add__angelo_orig, _angelo_mutants=add__angelo_mutant
     return _angelo_pick(_angelo_orig, _angelo_mutants, _angelo_cache)(*args, **kwargs)
 ```
 
-Copies are made **as text**, so a mutant anywhere inside the function comes along without
-anything having to understand it: nested functions, comprehensions and all.
+Angelo makes the copies **as text**. Thus a mutant at any position in the function is in
+the copy, and nothing must understand it: nested functions and comprehensions also.
 
-Three details are load-bearing:
+Three details are necessary:
 
-**The original and the table are captured as default arguments.** A method's body cannot
-see its own class body, so a bare name would fail at call time.
+**The original and the table are default arguments.** The body of a method cannot see its
+own class body. Thus a plain name would fail when Python calls it.
 
-**`_angelo_cache` is a mutable default on purpose.** It is one list per function, and the
-runtime resolves the live mutant into it once per batch. Without it every call of every
-mutated function would scan the whole batch — a tax on the user's hot path, for the entire
-run, not just for the mutant being judged.
+**`_angelo_cache` is a mutable default, on purpose.** Each function has one list. The
+runtime finds the active mutant once for each batch and stores it in the list. Without
+this, each call of each mutated function would search the full batch. That would make the
+user's most-used code slower for the full run, not only for the mutant under test.
 
-**Decorators move to the wrapper.** `@property` and `@classmethod` have to wrap the
-function the outside world calls, not a copy of it.
+**Decorators go on the wrapper.** `@property` and `@classmethod` must wrap the function
+that other code calls, not a copy of it.
 
-## What stays spliced
+## What stays as a splice
 
-Schemata are all-or-nothing per batch: one spliced member needs the file written, and the
-re-import with it. So batches are composed from hosted and spliced mutants **separately** —
-mixed, at two mutants in three hosted, a batch of eight would be all-hosted about one time
-in forty, and the feature would do nothing.
+In one batch, all members must use schemata, or none. One spliced member makes Angelo write
+the file and import it again. Thus Angelo makes batches from hosted mutants and spliced
+mutants **separately**. If it mixed them, and two of three mutants were hosted, a batch of
+eight would have only hosted mutants approximately one time in forty. Then the feature
+would do nothing.
 
-A mutant is left to the splice path when:
+Angelo uses a splice for a mutant in these cases:
 
-| Case | Why |
+| Case | Reason |
 | --- | --- |
-| Module level, class attributes | No function to copy |
-| Anything that will not parse | See below |
-| Function signatures | A default argument runs at import, not at call |
-| `@x.setter` and friends | The decorator names the function it is rebuilding |
-| Async generators | `async def` and `yield from` do not combine |
-| Windows | No `fork()`, so no isolation |
+| Module level, class attributes | There is no function to copy. |
+| A mutant that does not parse | See below. |
+| Function signatures | A default argument runs during import, not during a call. |
+| `@x.setter` and similar | The decorator names the function that it changes. |
+| Async generators | `async def` and `yield from` do not work together. |
+| Windows | There is no `fork()`, so there is no isolation. |
 
-**A mutant that breaks the syntax is the one that matters.** Spliced, `*args` mutated to
-`/args` costs one `error` verdict and sits outside the score. Compiled into the file it
-breaks every other mutant there, and the whole package with it. Found on flask, where it
-turned all 221 mutants of a run into errors — which reads exactly like a broken test
-command. Every generated copy is now parsed before it is accepted.
+**The most important case is a mutant that breaks the syntax.** As a splice, `*args`
+changed to `/args` gives one `error` verdict, which is not in the score. Compiled into the
+file, it breaks all other mutants in the file, and the full package. We found this on
+flask, where all 221 mutants of a run became errors. This looks exactly like a broken test
+command. Now Angelo parses each generated copy before it uses it.
 
 ## Result
 
-flask, 1000-mutant sample, 16 workers, one mutant per run, the same pool judged twice:
+flask, a sample of 1000 mutants, 16 workers, one mutant for each run. The same mutants were
+judged two times:
 
-| | wall | 
+| | Total time |
 | --- | --- |
-| spliced | 158.4 s |
-| hosted | **115.9 s** |
+| Spliced | 158.4 s |
+| Hosted | **115.9 s** |
 
-**42.5 s, or 27%.** The mechanism on its own is worth 115 ms per mutant it hosts — a
-re-import of flask's 210 modules costs 165.9 ms and keeping them costs 50.5 ms — and 467 of
-the 750 judged mutants were hosted, which predicts 54 s. The rest is the splice path's file
-write and the mutants schemata cannot take.
+**42.5 s, or 27%.** For each hosted mutant, the mechanism saves 115 ms: an import of the
+210 flask modules takes 165.9 ms, and to keep them takes 50.5 ms. 467 of the 750 judged
+mutants were hosted. This predicts 54 s. The difference comes from the file writes of the
+splice path and from the mutants that schemata cannot host.
 
-Ten of the 1000 verdicts differ, and five of them are **schemata correcting the splice
-path**: a mutant that errored spliced came back `killed` or `survived` compiled in.
+Ten of the 1000 verdicts are different. In five of them, **schemata correct the splice
+path**: a mutant that was `error` as a splice was `killed` or `survived` when hosted.
 
-!!! warning "This was invisible until test selection worked"
-    The first measurement said schemata bought nothing. It was right, and it was measuring
-    a broken run: coverage.py names a test context after the module's `__name__` and junit
-    names it after the file's path, so on a project with no `tests/__init__.py` **no context
-    resolved**, every run was a whole-suite run, and 115 ms of saved import sat under 7.8 s
-    of tests nobody needed. Fixing that took the same pool from 718 s to 125 s and made this
-    number visible. See [test selection](02-test-selection.md).
+!!! warning "Test selection hid this result"
+    The first measurement said that schemata gave no improvement. That was correct for a
+    broken run. coverage.py names a test context with the `__name__` of the module. junit
+    names it with the path of the file. On a project with no `tests/__init__.py`, **no
+    context matched**. Each run executed the full suite, and the 115 ms of saved import was
+    small compared with 7.8 s of unnecessary tests. The fix decreased the time for the same
+    mutants from 718 s to 125 s, and made this result visible. See
+    [test selection](02-test-selection.md).
 
 ## Isolation
 
-Schemata mean nothing is re-imported, so nothing resets the process between mutants
-either. That makes isolation mandatory rather than nice.
+With schemata, nothing is imported again. Thus nothing resets the process between mutants.
+Isolation is therefore mandatory.
 
 ```mermaid
 sequenceDiagram
@@ -132,37 +136,38 @@ sequenceDiagram
     loop each mutant
         A->>P: which tests, which mutants
         P->>C: fork()
-        Note over C: set the live ids, run the tests
-        C-->>P: verdict, down a pipe
-        Note over C: exit, taking its mess with it
+        Note over C: set the active ids, run the tests
+        C-->>P: verdict, through a pipe
+        Note over C: exit, and all its changes go with it
         P-->>A: verdict
     end
 ```
 
-`gc.freeze()` is not optional. The child inherits tens of thousands of tracked objects, and
-the collector walking them dirties every copy-on-write page it touches. Without it a fork
-costs more than it saves; with it the child beat an in-process run 26 ms to 40 ms.
+`gc.freeze()` is mandatory. The child gets tens of thousands of tracked objects from the
+parent. When the garbage collector examines them, it writes to each copy-on-write page that
+it touches. Without `gc.freeze()`, a fork costs more than it saves. With it, the child took
+26 ms, against 40 ms for a run in the same process.
 
-Three things follow:
+The results:
 
-- **`warm_recycle_after` does nothing on this path.** A forking worker accumulates no
-  state, so restarting it would only repay the warm-up. The worker says whether it forked
-  and angelo stops counting.
-- **A hung mutant no longer costs a worker.** The parent owns the deadline and kills the
-  child's process group, then takes the next mutant.
-- **A worker that cannot fork purges anyway**, whatever the caller asked for. That is
-  slower and correct, and it is what happens if the warm-up leaves a thread behind, since
-  `fork()` in a multi-threaded process is undefined.
+- **`warm_recycle_after` has no effect on this path.** A forking worker collects no state.
+  A restart would only repeat the warm-up. The worker tells Angelo that it forks, and
+  Angelo stops the count.
+- **A mutant that hangs does not stop a worker.** The parent controls the time limit. It
+  stops the process group of the child, then takes the next mutant.
+- **A worker that cannot fork uses module removal**, also when the caller asked for fork.
+  This is slower, but correct. It occurs when the warm-up leaves a thread, because
+  `fork()` in a process with more than one thread is not defined.
 
 ## Limits
 
-- **Unix only.** Windows has no `fork()`, and schemata without it would leak state between
-  mutants with nothing to reset it — worse than what it replaces.
-- **Introspection changes.** `inspect.signature` sees the wrapper. Async and generator
-  functions get wrappers of their own shape so `iscoroutinefunction` still answers
-  correctly, but an async generator is not hosted at all.
-- **A mutant that raises at import time would take its whole file down.** Signatures are
-  excluded for this reason; a mutant in the body cannot run until it is called.
-- The generated code is never read by a human and never touches the project — it is
-  written into the worker's temporary copy. `ANGELO_DUMP_SCHEMATA=<dir>` keeps a readable
-  copy when it needs debugging.
+- **Only on Unix.** Windows has no `fork()`. Without it, schemata would keep state between
+  mutants, and nothing would reset it. That is worse than the method that it replaces.
+- **Introspection changes.** `inspect.signature` sees the wrapper. Async functions and
+  generator functions get wrappers of the same type. Thus `iscoroutinefunction` still
+  gives the correct answer. But Angelo does not host async generators.
+- **A mutant that raises an exception during import would break its full file.** For this
+  reason, Angelo does not host signatures. A mutant in the body cannot run until a call
+  occurs.
+- The generated code is only in the temporary copy of the worker. It never changes the
+  project. To debug it, use `ANGELO_DUMP_SCHEMATA=<dir>` to keep a readable copy.

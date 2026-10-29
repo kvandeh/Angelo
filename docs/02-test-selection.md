@@ -1,54 +1,54 @@
 # Test selection
 
-!!! abstract "In one sentence"
-    A fault can only be caught by a test that executes it, so Angelo runs those tests and
-    no others. Measured at **2.8x faster** on its own, though it partly competes with
-    batching.
+!!! abstract "Summary"
+    Only a test that executes a mutant can detect it. Thus Angelo runs only those tests.
+    Result: **2.8x faster** alone. It partly competes with batching.
 
 ## The problem
 
-Planting a fault in one function and then running three thousand tests is mostly waste.
-Only the handful of tests that actually execute that function can possibly notice.
+If you change one function and then run 3000 tests, most of that work is waste. Only the
+few tests that execute that function can detect the change.
 
-This is not a new observation. PIT built its reputation on it, describing the difference
-as minutes instead of days. Stryker calls per test coverage analysis its single largest
-speedup setting.
+This is a known idea. PIT says that it changes the duration from days to minutes. Stryker
+calls per-test coverage its largest speed setting.
 
-Angelo already collected the necessary data for [batching](01-batch-mutating.md) and was
-using it for one purpose only.
+Angelo already had the necessary data for [batching](01-batch-mutating.md). Test selection
+uses the same data a second time.
 
-## The awkward part
+## The difficult part
 
-Coverage and pytest do not spell a test the same way.
+Coverage and pytest give a test different names.
 
-| Source | How it names one test |
+| Source | Name of one test |
 | --- | --- |
 | coverage.py context | `pkg.test_mod.test_x` |
 | pytest node id | `pkg/test_mod.py::test_x` |
 
-Converting between them is not string manipulation, because a dotted name is ambiguous.
-Given `a.b.c`, the module could be `a/b/c.py`, or it could be `a/b.py` containing a class
-`c`. Nothing in the name says which.
+A simple text conversion does not work, because a dotted name has more than one meaning.
+`a.b.c` can be the module `a/b/c.py`. It can also be the module `a/b.py` with a class `c`.
+The name does not tell you which.
 
-Angelo resolves this by walking prefixes and taking the longest one that exists as a file
-on disk. The test inventory comes from the junit report of the baseline run, which lists
-every test with its class name.
+Angelo tries each prefix of the name and uses the longest prefix that is a file on disk.
+The list of tests comes from the junit report of the baseline run. That report gives each
+test with its class name.
 
-**And the two names do not start in the same place.** coverage.py names a context after the
-test module's `__name__`; junit names a case after its path from the rootdir. They agree
-only when the test directory is a Python package, and most pytest projects have no
-`tests/__init__.py`, so `tests/test_app.py` imports as plain `test_app`:
+**The two names also start at different points.** coverage.py uses the `__name__` of the
+test module. junit uses the path from the pytest root directory. The two names are the same
+only when the test directory is a Python package. Most pytest projects have no
+`tests/__init__.py`. Thus `tests/test_app.py` has the module name `test_app`:
 
 | Source | flask |
 | --- | --- |
 | coverage.py context | `test_appctx.test_basic_url_generation` |
 | junit `classname.name` | `tests.test_appctx.test_basic_url_generation` |
 
-Matching those exactly matched **0 of flask's 371 contexts**. Every run fell back to the
-whole suite and selection did nothing at all, silently — the run was correct, just eight
-times slower than it looked. So Angelo drops leading segments until one matches, and
-**refuses a name two junit cases both claim**: one node id standing for two tests would run
-too few of them, which is the one failure that invents a survivor.
+An exact match found **0 of the 371 flask contexts**. Each run then used the full suite, and
+test selection did nothing. There was no error. The results were correct, but eight times
+slower.
+
+Now Angelo removes the first parts of the name, one at a time, until a part matches. If two
+junit tests match the same name, Angelo **does not use the name**. One node id for two tests
+would run too few tests, and too few tests can make a false survivor.
 
 ```mermaid
 flowchart LR
@@ -58,79 +58,76 @@ flowchart LR
     D --> E[run only those tests]
 ```
 
-## Two rules that keep it honest
+## Two safety rules
 
-**Anything unresolvable falls back to running everything.** If a single covering test
-cannot be named exactly, Angelo runs the whole suite for that batch. Running too many
-tests costs time. Running too few would invent survivors, which is the one failure this
-tool must never have.
+**If Angelo cannot find a test name, it runs the full suite.** When Angelo cannot name one
+of the covering tests exactly, it runs all tests for that batch. Too many tests cost time.
+Too few tests can make false survivors. This tool must not make false survivors.
 
-**A run judging a single mutant stops at the first failure.** Once one test has failed,
-the mutant is caught, and the rest of the suite has nothing left to say. A batch never
-stops early, because it needs to see every failure in order to attribute them.
+**A run with one mutant stops at the first failure.** When one test fails, that mutant is
+killed. The other tests cannot change that verdict. A batch does not stop early, because it
+must see all failures to find which member each one belongs to.
 
-This applies to the fallback too, which it did not until flask showed the cost. A fallback
-runs *more tests*, not a different kind of run. Without `-x` a lone import-time mutant ran
-all 371 flask tests to the end after it had already been caught — and a run that overran
-the whole-suite budget while doing so was recorded `timeout` instead of `killed`. **23 of
-1000 mutants were being told the wrong story about how they died.**
+This rule also applies when a single-mutant run uses the full suite. Before this was
+corrected, a mutant that ran during import executed all 371 flask tests after the first
+failure. Some of these runs went past the time limit, and Angelo recorded `timeout`, not
+`killed`. **23 of 1000 mutants had the wrong status.**
 
-## The budget follows the selection
+## The time limit follows the selection
 
-A run that has chosen its tests is also **timed** by them.
+A run that selects its tests also gets its time limit from those tests.
 
-| Run | Budget |
+| Run | Time limit |
 | --- | --- |
-| Selected tests | their baseline time × `timeout_factor` + 5 s |
-| Whole suite | the suite's duration × `timeout_factor` + 5 s |
+| Selected tests | baseline time of those tests × `timeout_factor` + 5 s |
+| Full suite | duration of the suite × `timeout_factor` + 5 s |
 
-The per-test durations come free: the baseline run's junit report already lists every test
-with a `time` attribute.
+The junit report of the baseline run gives a `time` for each test. Thus the data costs
+nothing.
 
-**Why this is not a small saving.** A timeout costs its entire budget, every time. On
-click a 4.21 second suite gave every mutant about 22 seconds, including the mutants whose
-tests are worth 50 milliseconds, and 60 to 76 mutants collected that bill on every run.
-That is the measurement where batching and selection
-[bought nothing at all](05-benchmarks.md#a-real-codebase-where-the-numbers-do-not-hold).
+**This saving is large.** A timeout uses all of its time limit each time. On click, a
+4.21-second suite gave each mutant approximately 22 seconds. Mutants whose tests take only
+50 milliseconds got the same limit. Each run had 60 to 76 such timeouts. In that
+measurement, batching and test selection
+[gave no improvement](05-benchmarks.md#a-real-codebase-where-the-numbers-do-not-hold).
 
-**The floor is a constant, deliberately.** Interpreter start, imports and collection are
-most of a short run and none of it appears in a junit `time`. Scaling the headroom with
-the tests would give the fastest tests the least room, which is backwards. Five seconds
-covers a cold start on a loaded machine, and it has to, because any warm worker failure
-falls back to a cold subprocess.
+**The minimum of 5 seconds is a constant, on purpose.** Interpreter startup, imports and
+collection are most of a short run, and junit `time` does not include them. If the extra
+time increased with the test time, the fastest tests would get the least extra time. That
+is wrong. 5 seconds is enough for a cold start on a busy computer. This is necessary,
+because when a warm worker fails, Angelo uses a cold subprocess.
 
-## Which direction the error runs
+## Which error is worse
 
-A budget that is too generous wastes time. A budget that is too tight **invents kills**,
-because a timeout counts as detected. Those two mistakes are not equally bad, so both
-terms err long.
+A time limit that is too long wastes time. A time limit that is too short **makes false
+kills**, because a timeout counts as detected. A false kill is worse, so both parts of the
+time limit are generous.
 
-**A timeout gets a second chance.** When a mutant times out alone, Angelo runs it again
-with two times the budget. Only a second timeout counts as detected.
+**A timeout gets a second run.** When a mutant times out alone, Angelo runs it again with
+two times the time limit. Only a second timeout counts as detected.
 
-The honest limit: a mutant that makes the code slower without making it hang now crosses a
-tighter line than before, and a mutant like that would be scored as detected where it once
+One limit remains. A mutant that makes the code slower, but does not make it hang, can now
+go past a shorter limit than before. Such a mutant then counts as detected, but before it
 survived. The
 [verdict matrix](https://github.com/kvandeh/angelo/blob/main/scripts/verdict-matrix.sh)
-now carries a deliberately hanging mutant, so a configuration that disagrees about a
-timeout fails the build rather than the reader.
+contains a mutant that hangs on purpose. If a configuration does not agree about a
+timeout, the build fails.
 
 ## Result
 
-Two hundred mutants, eight workers.
+200 mutants, 8 workers.
 
-| suite length | batching alone | selection alone | both |
+| Suite duration | Batching alone | Selection alone | Both |
 | --- | --- | --- | --- |
 | 2.0 s | 4.6x | **2.8x** | **7.7x** |
 | 0.2 s | 3.7x | 1.05x | 4.0x |
 
-## The interaction worth understanding
+## How selection and batching interact
 
-Selection is worth 2.8x at a batch size of one, but only 1.7x at a batch size of eight.
+At batch size 1, selection gives 2.8x. At batch size 8, it gives only 1.7x.
 
-The reason is structural. A batch runs the **union** of its members' covering tests. The
-larger the batch, the larger that union, and the closer it gets to simply running
-everything. The two features are competing for the same saving.
+A batch runs all the covering tests of all its members. A larger batch runs more tests, so
+it is nearer to the full suite. The two features compete for the same saving.
 
 ```mermaid
 flowchart LR
@@ -142,14 +139,15 @@ flowchart LR
     end
 ```
 
-They still stack to 7.7x, which is well short of the 12.9x their product would suggest.
-No published figure exists for this interaction, so the honest advice is to measure
-`batch_size` on your own project rather than trusting a default.
+Together they give 7.7x. This is much less than 12.9x, the product of the two. We know of
+no published number for this interaction. Thus we recommend that you measure `batch_size`
+on your own project. Do not trust the default without a measurement.
 
 ## Limits
 
-- Selection removes **test** time, not **startup** time. On a fast suite there is very
-  little test time to remove, which is why the 0.2 second row shows almost nothing.
-  [Warm workers](03-warm-workers.md) attack the other half.
-- Parametrised tests collapse to their function, so the selection is a safe superset.
-- Requires coverage.py and a `python -m pytest` test command.
+- Selection removes **test** time. It does not remove **startup** time. A fast suite has
+  little test time to remove. Thus the 0.2-second row shows almost no improvement.
+  [Warm workers](03-warm-workers.md) decrease the startup time.
+- Angelo selects a parametrised test as one function. Thus the selection can contain more
+  cases than necessary. This is safe.
+- Test selection needs coverage.py and a `python -m pytest` test command.
